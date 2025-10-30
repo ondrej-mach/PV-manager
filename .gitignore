@@ -1,0 +1,12 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.so
+.mypy_cache/
+.pytest_cache/
+.cache/
+.cache.sqlite
+trained_models/
+*.joblib
+.DS_Store
