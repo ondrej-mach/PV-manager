@@ -10,3 +10,5 @@ __pycache__/
 trained_models/
 *.joblib
 .DS_Store
+test_prediction.py
+output/

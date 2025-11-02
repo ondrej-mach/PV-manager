@@ -189,6 +189,84 @@ class HomeAssistant:
             return out
         return pd.DataFrame()
 
+    # --- Short-term helpers ---
+    async def fetch_statistics_window_async(
+        self,
+        entities_with_types: List[Tuple[str, str]],
+        start_time: datetime,
+        end_time: datetime,
+        period: str = "hour",
+    ) -> pd.DataFrame:
+        """Fetch statistics for a custom time window.
+
+        Args:
+            entities_with_types: [(entity_id, type)] pairs (e.g., ("sensor.pv_power","mean"))
+            start_time: window start (timezone-aware, UTC preferred)
+            end_time: window end (timezone-aware, UTC preferred)
+            period: "5minute", "hour", "day", or "month"
+        Returns:
+            DataFrame indexed by timestamp with columns per entity id.
+        """
+        entities = [e for e, _t in entities_with_types]
+        type_for_entity = {e: t for e, t in entities_with_types}
+        requested_types = sorted(set(type_for_entity.values()))
+
+        req = {
+            "type": "call_service",
+            "domain": "recorder",
+            "service": "get_statistics",
+            "service_data": {
+                "statistic_ids": entities,
+                "period": period,
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat(),
+                "types": requested_types,
+            },
+            "return_response": True,
+        }
+
+        resp = await self._send_message(req)
+        stats = resp.get("result", {}).get("response", {}).get("statistics", {})
+
+        frames = []
+        for entity in entities:
+            rows = stats.get(entity, [])
+            if not rows:
+                continue
+            df = pd.DataFrame(rows)
+            if "start" not in df.columns:
+                continue
+            df["start"] = pd.to_datetime(df["start"], utc=True)
+            df = df.set_index("start").sort_index()
+            col = type_for_entity[entity]
+            if col in df.columns:
+                frames.append(df[[col]].rename(columns={col: entity}))
+
+        if frames:
+            return pd.concat(frames, axis=1).sort_index()
+        return pd.DataFrame()
+
+    def fetch_last_hours_sync(
+        self,
+        entities_with_types: List[Tuple[str, str]],
+        hours: int,
+        period: str = "hour",
+    ) -> pd.DataFrame:
+        """Fetch last N hours of statistics.
+        
+        Args:
+            period: "5minute" for high-res recent data, "hour" for longer lookback
+        """
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(hours=hours)
+        if self._loop:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.fetch_statistics_window_async(entities_with_types, start_time, end_time, period),
+                self._loop,
+            )
+            return fut.result()
+        return asyncio.run(self.fetch_statistics_window_async(entities_with_types, start_time, end_time, period))
+
     def fetch_statistics_sync(
         self,
         entities_with_types: List[Tuple[str, str]],
