@@ -31,21 +31,28 @@ class HomeAssistant:
         self._thread: Optional[threading.Thread] = None
         
     async def _ensure_connected(self) -> WebSocketClientProtocol:
-        """Ensure WebSocket connection is established and authenticated."""
+        """Ensure WebSocket connection is established and authenticated.
+        
+        Reuses existing connection if still open, otherwise creates a new one.
+        """
+        # Check if we have an existing connection that's still open
         if self._ws:
-            # Some websocket client implementations may not expose a `closed`
-            # attribute. Be defensive: if the attribute exists and is False,
-            # reuse the connection; if it doesn't exist, assume the connection
-            # object is still valid and reuse it.
+            # Check if connection is still alive
             try:
-                if not getattr(self._ws, "closed"):
+                # The websockets library's connection has an 'open' property
+                if hasattr(self._ws, 'open') and self._ws.open:
+                    return self._ws
+                # Fallback: check if 'closed' attribute exists and is False
+                if hasattr(self._ws, 'closed') and not self._ws.closed:
                     return self._ws
             except Exception:
-                return self._ws
+                # If checking the state fails, assume connection is dead
+                self._ws = None
             
         if not self.token:
             raise RuntimeError("No authentication token available")
             
+        # Establish new connection
         self._ws = await websockets.connect(self.url)
         await self._ws.recv()  # auth required message
         await self._ws.send(json.dumps({"type": "auth", "access_token": self.token}))
@@ -72,30 +79,15 @@ class HomeAssistant:
         try:
             resp = await self._send_message({"type": "get_config"})
             if resp.get("success"):
-                result = resp.get("result", {})
-                # Close the connection after fetching config to avoid
-                # leaving a WebSocket object attached to a now-finished
-                # asyncio loop (this prevents cross-loop Future errors
-                # when callers use `asyncio.run` multiple times).
-                try:
-                    if self._ws:
-                        close_coro = getattr(self._ws, "close", None)
-                        if callable(close_coro):
-                            res = close_coro()
-                            if asyncio.iscoroutine(res):
-                                await res
-                except Exception:
-                    # Ignore close errors here; we'll reset the attribute
-                    pass
-                finally:
-                    self._ws = None
-
-                return result
+                return resp.get("result", {})
             return None
         except Exception:
             # Connection error - reset connection for next attempt
             if self._ws:
-                await self._ws.close()
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
                 self._ws = None
             raise
 
@@ -167,11 +159,15 @@ class HomeAssistant:
                 for entity in entities:
                     if entity in stats:
                         results[entity].extend(stats[entity])
-        finally:
-            # Always close connection after bulk operations
+        except Exception:
+            # On error, close the connection so it gets re-established on next call
             if self._ws:
-                await self._ws.close()
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
                 self._ws = None
+            raise
 
         # Process results into DataFrame
         frames = []
@@ -246,22 +242,17 @@ class HomeAssistant:
             self._thread = None
 
     async def close(self):
-        """Close the WebSocket connection if it's open."""
+        """Close the WebSocket connection if it's open.
+        
+        Call this when shutting down the addon or when you're done with all operations.
+        """
         if not self._ws:
             return
 
-        # Some connection objects expose a coroutine `close()` but not a
-        # `closed` attribute. Be defensive: if a `close` callable exists,
-        # call it and await if it returns a coroutine. Finally unset
-        # the stored connection.
-        close_attr = getattr(self._ws, "close", None)
-        if callable(close_attr):
-            try:
-                result = close_attr()
-                if asyncio.iscoroutine(result):
-                    await result
-            except Exception:
-                # Ignore errors during close; connection is being discarded.
-                pass
-
-        self._ws = None
+        try:
+            await self._ws.close()
+        except Exception:
+            # Ignore errors during close
+            pass
+        finally:
+            self._ws = None
