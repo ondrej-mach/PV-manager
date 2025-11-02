@@ -8,3 +8,6 @@ openmeteo-requests
 requests-cache
 retry-requests
 matplotlib
+requests
+cvxpy
+entsoe-py

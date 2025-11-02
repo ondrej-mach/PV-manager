@@ -1,0 +1,50 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Install Python requirements",
+			"type": "shell",
+			"command": "pip install -r requirements.txt",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Install entsoe-py",
+			"type": "shell",
+			"command": "pip install entsoe-py",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Install cvxpy",
+			"type": "shell",
+			"command": "pip install cvxpy",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Install cvxpy via python -m pip",
+			"type": "shell",
+			"command": "python -m pip install cvxpy",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Install entsoe-py via python -m pip",
+			"type": "shell",
+			"command": "python -m pip install entsoe-py",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}
