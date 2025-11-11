@@ -77,11 +77,12 @@ def add_pv_lags(df: pd.DataFrame, lags=(24,)) -> pd.DataFrame:
     return out
 
 def normalize_ha(df: pd.DataFrame, rename: Dict[str,str]) -> pd.DataFrame:
+    """Normalize HA data: rename columns, resample to hourly, convert W to kW."""
     out = df.rename(columns=rename)
     out = out.resample("h").mean()
     for c in [TARGET_COL, PV_COL]:
         if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
+            out[c] = pd.to_numeric(out[c], errors="coerce") / 1000.0  # Convert W to kW
     return out
 
 def assemble_training_frames(ha_raw: pd.DataFrame, wx: pd.DataFrame, tz: str="Europe/Prague") -> Dict[str, pd.DataFrame]:
@@ -132,7 +133,10 @@ def assemble_forecast_features(
     ha = normalize_ha(ha_recent, rename=rename)
 
     # Resample to match the future timeline frequency if needed
-    future_freq = pd.infer_freq(wx_future.index)
+    try:
+        future_freq = pd.infer_freq(wx_future.index)
+    except ValueError:
+        future_freq = None
     if future_freq is None:
         # Infer from first two timestamps
         if len(wx_future) > 1:

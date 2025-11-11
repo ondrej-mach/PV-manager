@@ -5,6 +5,7 @@ import os
 import pandas as pd
 import cvxpy as cp
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -18,20 +19,36 @@ class BatteryConfig:
     eb_rt: float = 0.96  # internal round-trip (battery cell)
 
 
-def solve_lp_optimal_control(S: pd.DataFrame, cfg: BatteryConfig, deg_eur_per_kwh: float = 0.10,
-                             throughput_mode: str = "avg") -> pd.DataFrame:
+def solve_lp_optimal_control(
+    S: pd.DataFrame,
+    cfg: BatteryConfig,
+    deg_eur_per_kwh: float = 0.10,
+    throughput_mode: str = "avg",
+    soc0: Optional[float] = None,
+    reserve_soc_hard: Optional[float] = None,
+    reserve_soc_soft: Optional[float] = None,
+    reserve_soft_penalty_eur_per_kwh: Optional[float] = None,
+    force_terminal_soc: bool = True,
+    terminal_soc: Optional[float] = None,
+    allow_grid_charging: bool = True,
+) -> pd.DataFrame:
     """Solve linear program for optimal battery dispatch.
 
     Input S must contain columns: 'pv_kw', 'load_kw', 'dt_h', 'price_eur_per_kwh'.
     Index should be a DateTimeIndex.
     Returns DataFrame with dispatch decisions and SoC.
+
+    Optional reserves:
+    - reserve_soc_hard enforces an absolute minimum SoC (fraction of capacity).
+    - reserve_soc_soft encourages staying above a higher SoC via linear penalty.
+    - reserve_soft_penalty_eur_per_kwh overrides the penalty weight (€/kWh) for soft reserve violations.
     """
     # sanitize inputs
     S = S.copy()
     for c in ("pv_kw", "load_kw"):
-        S[c] = pd.to_numeric(S[c], errors="coerce").fillna(0.0).clip(lower=0.0)
-    S["dt_h"] = pd.to_numeric(S["dt_h"], errors="coerce").fillna(0.0).clip(lower=0.0)
-    S["price_eur_per_kwh"] = pd.to_numeric(S["price_eur_per_kwh"], errors="coerce").ffill().bfill()
+        S.loc[:, c] = pd.to_numeric(S[c], errors="coerce").fillna(0.0).clip(lower=0.0)
+    S.loc[:, "dt_h"] = pd.to_numeric(S["dt_h"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    S.loc[:, "price_eur_per_kwh"] = pd.to_numeric(S["price_eur_per_kwh"], errors="coerce").ffill().bfill()
 
     cap_kwh, soc_min, soc_max = cfg.cap_kwh, cfg.soc_min, cfg.soc_max
     p_batt_max = cfg.p_max_kw
@@ -39,11 +56,43 @@ def solve_lp_optimal_control(S: pd.DataFrame, cfg: BatteryConfig, deg_eur_per_kw
     eta_b_c = float(np.sqrt(cfg.eb_rt))
     eta_b_d = float(np.sqrt(cfg.eb_rt))
 
-    if "soc_meas" in S.columns:
+    def _parse_env_float(name: str) -> Optional[float]:
+        raw = os.getenv(name, "")
+        raw = raw.strip()
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    if reserve_soc_hard is None:
+        reserve_soc_hard = _parse_env_float("RESERVE_SOC_HARD")
+    if reserve_soc_soft is None:
+        reserve_soc_soft = _parse_env_float("RESERVE_SOC_SOFT")
+    if reserve_soft_penalty_eur_per_kwh is None:
+        reserve_soft_penalty_eur_per_kwh = _parse_env_float("RESERVE_SOFT_PENALTY_EUR_PER_KWH")
+
+    def _clip_soc(value: float) -> float:
+        return float(min(max(value, 0.0), soc_max))
+
+    hard_soc_floor = soc_min
+    if reserve_soc_hard is not None:
+        hard_soc_floor = max(hard_soc_floor, _clip_soc(reserve_soc_hard))
+
+    soft_soc_target: Optional[float] = None
+    if reserve_soc_soft is not None:
+        soft_soc_target = _clip_soc(reserve_soc_soft)
+        if soft_soc_target < hard_soc_floor:
+            soft_soc_target = hard_soc_floor
+
+    if soc0 is not None:
+        soc0 = float(np.clip(soc0, hard_soc_floor, soc_max))
+    elif "soc_meas" in S.columns:
         s = pd.to_numeric(S["soc_meas"], errors="coerce").ffill().bfill()
-        soc0 = float(np.clip(s.iloc[0] if len(s) else 0.5, soc_min, soc_max))
+        soc0 = float(np.clip(s.iloc[0] if len(s) else 0.5, hard_soc_floor, soc_max))
     else:
-        soc0 = float(np.clip(0.5, soc_min, soc_max))
+        soc0 = float(np.clip(0.5, hard_soc_floor, soc_max))
     e0 = cap_kwh * soc0
 
     pv = S["pv_kw"].to_numpy(float)
@@ -70,10 +119,24 @@ def solve_lp_optimal_control(S: pd.DataFrame, cfg: BatteryConfig, deg_eur_per_kw
 
     cons = [
         e[0] == e0,
-        e[-1] == e0,
-        e >= cap_kwh * soc_min,
+        e >= cap_kwh * hard_soc_floor,
         e <= cap_kwh * soc_max,
     ]
+
+    terminal_energy: Optional[float] = None
+    if force_terminal_soc:
+        terminal_energy = e0
+    elif terminal_soc is not None:
+        terminal_target = float(np.clip(terminal_soc, hard_soc_floor, soc_max))
+        terminal_energy = cap_kwh * terminal_target
+
+    if terminal_energy is not None:
+        cons.append(e[-1] == terminal_energy)
+
+    reserve_shortfall = None
+    if soft_soc_target is not None and cap_kwh > 0:
+        reserve_shortfall = cp.Variable(N, nonneg=True)
+
     for t in range(N):
         cons += [
             pv[t] == pv_to_load[t] + pv_to_batt[t] + pv_to_grid[t] + pv_curt[t],
@@ -81,8 +144,12 @@ def solve_lp_optimal_control(S: pd.DataFrame, cfg: BatteryConfig, deg_eur_per_kw
             ch_ac[t] <= p_batt_max,
             dis_ac[t] <= p_batt_max,
         ]
+        if not allow_grid_charging:
+            cons += [grid_to_batt[t] == 0]
         e_next = e[t] + (eta_c * eta_b_c) * ch_ac[t] * dt[t] - (1.0 / (eta_d * eta_b_d)) * dis_ac[t] * dt[t]
         cons += [e[t + 1] == e_next]
+        if reserve_shortfall is not None:
+            cons += [reserve_shortfall[t] >= cap_kwh * soft_soc_target - e[t + 1]]
 
     BUY = cp.Constant(prices + 0.14)  # add fixed components to import price if needed
     SELL = cp.Constant(prices)
@@ -99,12 +166,23 @@ def solve_lp_optimal_control(S: pd.DataFrame, cfg: BatteryConfig, deg_eur_per_kw
         throughput_kwh = 0.5 * cp.multiply(dc_in_kw + dc_out_kw, DT)
     deg_cost = deg_eur_per_kwh * cp.sum(throughput_kwh)
 
-    obj = cp.Minimize(trade_cost + deg_cost)
+    reserve_penalty = 0.0
+    if reserve_shortfall is not None:
+        # Default to average import price unless an explicit penalty is provided
+        penalty_weight = reserve_soft_penalty_eur_per_kwh
+        if penalty_weight is None:
+            avg_buy_price = float(np.mean(prices + 0.14)) if len(prices) else 0.0
+            penalty_weight = max(avg_buy_price, 0.0)
+        else:
+            penalty_weight = max(penalty_weight, 0.0)
+        reserve_penalty = penalty_weight * cp.sum(reserve_shortfall)
+
+    obj = cp.Minimize(trade_cost + deg_cost + reserve_penalty)
 
     prob = cp.Problem(obj, cons)
     used = None
     try:
-        prob.solve(solver=cp.CLARABEL, verbose=False, max_iter=2000, tol_gap_rel=1e-8, tol_feas=1e-8, tol_kkt=1e-8)
+        prob.solve(solver=cp.CLARABEL, verbose=False, max_iter=2000)
         used = "CLARABEL"
     except Exception:
         prob.solve(solver=cp.SCS, verbose=False, max_iters=100000, eps=1e-5)
@@ -128,10 +206,12 @@ def solve_lp_optimal_control(S: pd.DataFrame, cfg: BatteryConfig, deg_eur_per_kw
         "buy_price_eur_per_kwh": BUY.value,
         "sell_price_eur_per_kwh": SELL.value,
     })
-    opt["soc"] = (np.array(e.value[1:]) / cap_kwh).clip(0, 1)
-    opt["import_kwh"] = opt["grid_import_kw"] * opt["dt_h"]
-    opt["export_kwh"] = opt["grid_export_kw"] * opt["dt_h"]
-    opt["cost_import_eur"] = opt["import_kwh"] * opt["buy_price_eur_per_kwh"]
-    opt["rev_export_eur"] = opt["export_kwh"] * opt["sell_price_eur_per_kwh"]
+    opt.loc[:, "soc"] = (np.array(e.value[1:]) / cap_kwh).clip(0, 1)
+    opt.loc[:, "import_kwh"] = opt["grid_import_kw"] * opt["dt_h"]
+    opt.loc[:, "export_kwh"] = opt["grid_export_kw"] * opt["dt_h"]
+    opt.loc[:, "cost_import_eur"] = opt["import_kwh"] * opt["buy_price_eur_per_kwh"]
+    opt.loc[:, "rev_export_eur"] = opt["export_kwh"] * opt["sell_price_eur_per_kwh"]
+    if reserve_shortfall is not None:
+        opt.loc[:, "reserve_shortfall_kwh"] = reserve_shortfall.value
 
     return opt

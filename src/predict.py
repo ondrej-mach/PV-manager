@@ -1,5 +1,11 @@
 import os
 import sys
+
+# Suppress ResourceWarnings at Python level before any imports
+import warnings
+warnings.simplefilter("ignore", ResourceWarning)
+os.environ['PYTHONWARNINGS'] = 'ignore::ResourceWarning'
+
 from datetime import datetime, timezone
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -99,9 +105,15 @@ def main():
         print("[PRED] Saved: output/predictions_house.png")
 
     finally:
+        import asyncio
+        import time
         try:
-            import asyncio
-            asyncio.run(ha.close())
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(ha.close())
+            loop.run_until_complete(asyncio.sleep(0.1))  # Allow cleanup
+            loop.close()
+            time.sleep(0.05)  # Final cleanup
         except Exception:
             pass
 
