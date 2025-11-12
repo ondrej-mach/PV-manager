@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 import os
 import pandas as pd
 import numpy as np
@@ -32,6 +32,9 @@ def run_prediction_pipeline(
     horizon_hours: int = 24,
     interval_minutes: int = 15,
     use_mock_weather: bool = False,
+    entities: Optional[List[Tuple[str, str]]] = None,
+    rename_map: Optional[Dict[str, str]] = None,
+    scales: Optional[Dict[str, float]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Run end-to-end prediction using recent HA data and Open-Meteo forecast.
 
@@ -45,8 +48,8 @@ def run_prediction_pipeline(
       - ha_recent: normalized recent HA data (KW columns) for plotting
     """
     # Fetch recent HA data for lags at 5-min resolution if available
-    ENTITIES = [("sensor.house_consumption", "mean"), ("sensor.pv_power", "mean")]
-    
+    ENTITIES = entities or [("sensor.house_consumption", "mean"), ("sensor.pv_power", "mean")]
+
     # For lags we need at least 72 hours of history
     ha_recent_raw = ha.fetch_last_hours_sync(ENTITIES, hours=max(72, horizon_hours + 72), period="5minute")
 
@@ -69,7 +72,13 @@ def run_prediction_pipeline(
         future_index = wx_forecast.index
 
     # Build features
-    feats = assemble_forecast_features(ha_recent_raw, wx_upsampled, tz=tz)
+    feats = assemble_forecast_features(
+        ha_recent_raw,
+        wx_upsampled,
+        tz=tz,
+        rename_map=rename_map,
+        scales=scales,
+    )
     pv_X = feats["pv_X"]
     house_X_template = feats["house_X"]
     ha_norm = feats["ha_norm"]

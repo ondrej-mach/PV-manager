@@ -16,11 +16,16 @@ from typing import Iterable, List
 import matplotlib.pyplot as plt
 import pandas as pd
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC_PATH = REPO_ROOT / "src"
+if str(SRC_PATH) not in sys.path:
+    sys.path.append(str(SRC_PATH))
+
 
 def _run_benchmark(repo_root: Path, env: dict) -> pd.DataFrame:
     """Execute the benchmark via subprocess and return its summary row."""
     subprocess.run(
-        [sys.executable, "src/benchmark.py"],
+        [sys.executable, "tools/benchmark.py"],
         cwd=str(repo_root),
         env=env,
         stdout=sys.stdout,

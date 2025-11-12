@@ -11,3 +11,6 @@ matplotlib
 requests
 cvxpy
 entsoe-py
+fastapi
+uvicorn[standard]
+jinja2

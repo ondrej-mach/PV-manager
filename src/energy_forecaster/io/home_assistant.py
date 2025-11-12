@@ -29,6 +29,8 @@ class HomeAssistant:
         # Background loop and thread for sync façade (persistent connection)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
+        self._cached_config: Optional[Dict[str, Any]] = None
+        self._cached_stat_metadata: Optional[List[Dict[str, Any]]] = None
         
     async def _ensure_connected(self) -> WebSocketClientProtocol:
         """Ensure WebSocket connection is established and authenticated.
@@ -79,7 +81,9 @@ class HomeAssistant:
         try:
             resp = await self._send_message({"type": "get_config"})
             if resp.get("success"):
-                return resp.get("result", {})
+                config = resp.get("result", {}) or {}
+                self._cached_config = config
+                return config
             return None
         except Exception:
             # Connection error - reset connection for next attempt
@@ -91,13 +95,8 @@ class HomeAssistant:
                 self._ws = None
             raise
 
-    def get_location(self, 
-                   fallback_lat: float = 49.6069, 
-                   fallback_lon: float = 15.5808, 
-                   fallback_tz: str = "Europe/Prague") -> Tuple[float, float, str]:
-        """Get coordinates and timezone from Home Assistant if available, otherwise use fallbacks."""
-        # Synchronous façade: run fetch_config_async on the background loop if available,
-        # otherwise run it in a fresh loop (rare - better to call connect_sync first).
+    def _get_core_config_sync(self) -> Dict[str, Any]:
+        """Retrieve and cache Home Assistant core config synchronously."""
         if self._loop:
             fut = asyncio.run_coroutine_threadsafe(self.fetch_config_async(), self._loop)
             try:
@@ -106,11 +105,37 @@ class HomeAssistant:
                 config = None
         else:
             config = asyncio.run(self.fetch_config_async())
+        if config is None:
+            config = {}
+        self._cached_config = config
+        return config
+
+    def get_location(self, 
+                   fallback_lat: float = 49.6069, 
+                   fallback_lon: float = 15.5808, 
+                   fallback_tz: str = "Europe/Prague") -> Tuple[float, float, str]:
+        """Get coordinates and timezone from Home Assistant if available, otherwise use fallbacks."""
+        config = self._cached_config or self._get_core_config_sync()
         return (
             config.get("latitude", fallback_lat) if config else fallback_lat,
             config.get("longitude", fallback_lon) if config else fallback_lon,
             config.get("time_zone", fallback_tz) if config else fallback_tz
         )
+
+    def get_locale(self, fallback_locale: str = "en-US") -> str:
+        """Return preferred locale string derived from HA config."""
+        config = self._cached_config or self._get_core_config_sync()
+        language = (config.get("language") if config else None) or ""
+        country = (config.get("country") if config else None) or ""
+        if language:
+            lang_clean = language.replace("_", "-")
+            if country:
+                country_clean = country.replace("_", "-")
+                if len(country_clean) == 2:
+                    country_clean = country_clean.upper()
+                return f"{lang_clean}-{country_clean}"
+            return lang_clean
+        return fallback_locale
 
     async def fetch_statistics_async(
         self,
@@ -245,6 +270,76 @@ class HomeAssistant:
         if frames:
             return pd.concat(frames, axis=1).sort_index()
         return pd.DataFrame()
+
+    async def list_statistic_ids_async(self, include_units: bool = True) -> List[Dict[str, Any]]:
+        """Return statistic metadata (id, names, units) from Home Assistant recorder."""
+        service_data: Dict[str, Any] = {}
+        req = {
+            "type": "call_service",
+            "domain": "recorder",
+            "service": "list_statistic_ids",
+            "service_data": service_data,
+            "return_response": True,
+        }
+
+        resp = await self._send_message(req)
+        payload: Any = resp.get("result", {})
+        if isinstance(payload, dict):
+            payload = payload.get("response", payload)
+        if isinstance(payload, dict):
+            payload = payload.get("statistic_ids", payload.get("statistics", payload))
+        if not isinstance(payload, list):
+            payload = []
+
+        normalized: List[Dict[str, Any]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            stat_id = item.get("statistic_id") or item.get("name")
+            if not stat_id:
+                continue
+            unit = (
+                item.get("unit_of_measurement")
+                or item.get("statistics_unit_of_measurement")
+                or item.get("unit")
+            )
+            normalized.append(
+                {
+                    "statistic_id": stat_id,
+                    "display_name": item.get("display_name") or item.get("name") or stat_id,
+                    "unit": unit,
+                    "has_mean": bool(item.get("has_mean")),
+                    "has_sum": bool(item.get("has_sum")),
+                    "unit_class": item.get("unit_class"),
+                    "device_class": item.get("device_class"),
+                    "supported_statistics": item.get("supported_statistics") or item.get("statistics_types") or [],
+                }
+            )
+        self._cached_stat_metadata = normalized
+        return normalized
+
+    def list_statistic_ids_sync(self, include_units: bool = True) -> List[Dict[str, Any]]:
+        if self._loop:
+            fut = asyncio.run_coroutine_threadsafe(self.list_statistic_ids_async(include_units=include_units), self._loop)
+            return fut.result()
+        return asyncio.run(self.list_statistic_ids_async(include_units=include_units))
+
+    async def list_entities_async(self) -> List[Dict[str, Any]]:
+        """Return raw entity state metadata from Home Assistant."""
+        result = await self._send_message({"type": "get_states"})
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict):
+            payload = result.get("result")
+            if isinstance(payload, list):
+                return payload
+        return []
+
+    def list_entities_sync(self) -> List[Dict[str, Any]]:
+        if self._loop:
+            fut = asyncio.run_coroutine_threadsafe(self.list_entities_async(), self._loop)
+            return fut.result()
+        return asyncio.run(self.list_entities_async())
 
     def fetch_last_hours_sync(
         self,

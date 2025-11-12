@@ -1,7 +1,7 @@
 
-import pandas as pd
 import numpy as np
-from typing import Optional, Iterable, Tuple, List, Dict
+import pandas as pd
+from typing import Dict, Iterable, List, Optional, Tuple
 
 WEATHER_FEATURES: List[str] = [
     "relative_humidity_2m",
@@ -30,7 +30,10 @@ TIME_FEATURES: List[str] = [
 ]
 
 TARGET_COL = "power_consumption_kw"
-PV_COL     = "pv_power_kw"
+PV_COL = "pv_power_kw"
+
+DEFAULT_RENAME_MAP = {"sensor.house_consumption": TARGET_COL, "sensor.pv_power": PV_COL}
+DEFAULT_SCALES = {TARGET_COL: 0.001, PV_COL: 0.001}
 
 def add_time_features(df: pd.DataFrame, tz: str = "Europe/Prague") -> pd.DataFrame:
     out = df.copy()
@@ -76,18 +79,29 @@ def add_pv_lags(df: pd.DataFrame, lags=(24,)) -> pd.DataFrame:
         out[f"pv_power_lag{L}"] = out[PV_COL].shift(L)
     return out
 
-def normalize_ha(df: pd.DataFrame, rename: Dict[str,str]) -> pd.DataFrame:
-    """Normalize HA data: rename columns, resample to hourly, convert W to kW."""
+def normalize_ha(
+    df: pd.DataFrame,
+    rename: Dict[str, str],
+    scales: Optional[Dict[str, float]] = None,
+) -> pd.DataFrame:
+    """Normalize HA data: rename columns, resample to hourly, convert using provided scales."""
     out = df.rename(columns=rename)
     out = out.resample("h").mean()
-    for c in [TARGET_COL, PV_COL]:
+    scales = scales or {}
+    for c, factor in scales.items():
         if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce") / 1000.0  # Convert W to kW
+            out[c] = pd.to_numeric(out[c], errors="coerce") * factor
     return out
 
-def assemble_training_frames(ha_raw: pd.DataFrame, wx: pd.DataFrame, tz: str="Europe/Prague") -> Dict[str, pd.DataFrame]:
-    rename = {"sensor.house_consumption": TARGET_COL, "sensor.pv_power": PV_COL}
-    ha = normalize_ha(ha_raw, rename=rename)
+def assemble_training_frames(
+    ha_raw: pd.DataFrame,
+    wx: pd.DataFrame,
+    tz: str = "Europe/Prague",
+    rename_map: Optional[Dict[str, str]] = None,
+    scales: Optional[Dict[str, float]] = None,
+) -> Dict[str, pd.DataFrame]:
+    rename = rename_map or DEFAULT_RENAME_MAP
+    ha = normalize_ha(ha_raw, rename=rename, scales=scales or DEFAULT_SCALES)
     wx_aligned = wx.reindex(ha.index).ffill()
     base = pd.concat([ha, wx_aligned], axis=1)
     base = add_hdd_cdd_temp_sq(base)
@@ -120,6 +134,8 @@ def assemble_forecast_features(
     ha_recent: pd.DataFrame,
     wx_future: pd.DataFrame,
     tz: str = "Europe/Prague",
+    rename_map: Optional[Dict[str, str]] = None,
+    scales: Optional[Dict[str, float]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """Build feature matrices for forecasting using recent HA history and future weather.
 
@@ -129,8 +145,8 @@ def assemble_forecast_features(
     
     Note: Lags are computed in hours from the recent history, mapped to the future timeline.
     """
-    rename = {"sensor.house_consumption": TARGET_COL, "sensor.pv_power": PV_COL}
-    ha = normalize_ha(ha_recent, rename=rename)
+    rename = rename_map or DEFAULT_RENAME_MAP
+    ha = normalize_ha(ha_recent, rename=rename, scales=scales or DEFAULT_SCALES)
 
     # Resample to match the future timeline frequency if needed
     try:

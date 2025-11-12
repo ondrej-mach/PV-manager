@@ -24,6 +24,11 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC_PATH = REPO_ROOT / "src"
+if str(SRC_PATH) not in sys.path:
+    sys.path.append(str(SRC_PATH))
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -52,7 +57,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--benchmark-script",
         type=Path,
-        default=Path("src/benchmark.py"),
+    default=Path("tools/benchmark.py"),
         help="Path to benchmark.py entry point",
     )
     return parser.parse_args()

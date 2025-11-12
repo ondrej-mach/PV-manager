@@ -8,6 +8,7 @@ This benchmark simulates real-world operation:
 """
 import os
 import sys
+from pathlib import Path
 
 # Aggressive warning suppression - must be before ALL imports
 import warnings
@@ -21,9 +22,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
-src_path = os.path.dirname(os.path.abspath(__file__))
-if src_path not in sys.path:
-    sys.path.append(src_path)
+repo_root = Path(__file__).resolve().parent.parent
+src_path = repo_root / "src"
+if str(src_path) not in sys.path:
+    sys.path.append(str(src_path))
 
 from energy_forecaster.io.home_assistant import HomeAssistant
 from energy_forecaster.io.benchmark_data import download_benchmark_data, load_benchmark_data

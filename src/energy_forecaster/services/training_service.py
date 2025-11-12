@@ -46,6 +46,8 @@ def run_training_pipeline(
     house_model = None,
     pv_model = None,
     ha: Optional[HomeAssistant] = None,
+    rename_map: Optional[Dict[str, str]] = None,
+    scales: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     print("[TRAIN] Fetching Home Assistant statistics...")
     if ha is None:
@@ -64,7 +66,7 @@ def run_training_pipeline(
     print(f"[TRAIN] Weather data: rows={len(wx)}, cols={len(wx.columns)}; window={wx.index.min()} to {wx.index.max() if len(wx)>0 else 'N/A'}")
 
     print("[TRAIN] Assembling training frames and computing features...")
-    frames = assemble_training_frames(ha_raw, wx, tz=tz)
+    frames = assemble_training_frames(ha_raw, wx, tz=tz, rename_map=rename_map, scales=scales)
     df_house = frames["house"]
     df_pv    = frames["pv"]
     print(f"[TRAIN] After feature engineering: house={df_house.shape}, pv={df_pv.shape}")
