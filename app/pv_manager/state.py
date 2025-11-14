@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import math
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -19,7 +21,7 @@ from energy_forecaster.services.baseline_control import BatteryConfig
 from energy_forecaster.services.optimal_control import solve_lp_optimal_control
 from energy_forecaster.services.prediction_service import run_prediction_pipeline
 from energy_forecaster.services.training_service import run_training_pipeline
-from .settings import AppSettings, load_settings, save_settings
+from .settings import AppSettings, EntitySelection, load_settings, save_settings
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,6 +29,7 @@ INTERVAL_MINUTES_DEFAULT = 15
 HORIZON_HOURS_DEFAULT = 24
 MODELS_DIR_DEFAULT = Path("trained_models")
 LOOKBACK_DAYS_DEFAULT = 730
+T = TypeVar("T")
 @dataclass
 class TrainingStatus:
     running: bool = False
@@ -129,16 +132,43 @@ class AppContext:
         self._lon: Optional[float] = None
         self._tz: Optional[str] = None
         self._locale: Optional[str] = None
+        self._settings: AppSettings = load_settings()
+        self._settings_lock = asyncio.Lock()
         self._battery_cfg = BatteryConfig()
+        self._battery_wear_cost = max(0.0, float(self._settings.battery.wear_cost_eur_per_kwh))
         self._scheduler_task: Optional[asyncio.Task] = None
         self._training_task: Optional[asyncio.Task] = None
         self._manual_cycle_task: Optional[asyncio.Task] = None
         self._training_status = TrainingStatus()
         self._ha_error: Optional[str] = None
-        self._settings: AppSettings = load_settings()
-        self._settings_lock = asyncio.Lock()
         self._stat_catalog: list[dict[str, Any]] = []
         self._entity_catalog: list[dict[str, Any]] = []
+
+    async def _call_in_thread(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[T] = loop.create_future()
+        ctx = contextvars.copy_context()
+
+        def _runner() -> None:
+            try:
+                result = ctx.run(func, *args, **kwargs)
+            except Exception as exc:  # pragma: no cover - thread bridge
+                if future.cancelled():
+                    return
+                loop.call_soon_threadsafe(future.set_exception, exc)
+            else:
+                if future.cancelled():
+                    return
+                loop.call_soon_threadsafe(future.set_result, result)
+
+        thread = threading.Thread(target=_runner, daemon=True)
+        thread.start()
+        try:
+            return await future
+        except asyncio.CancelledError:
+            if not future.done():
+                future.cancel()
+            raise
 
     async def start(self) -> None:
         try:
@@ -167,8 +197,7 @@ class AppContext:
                 await self._manual_cycle_task
             self._manual_cycle_task = None
         if self._ha:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._ha.close_sync)
+            await self._call_in_thread(self._ha.close_sync)
             self._ha = None
 
     async def _ensure_home_assistant(self) -> None:
@@ -185,9 +214,8 @@ class AppContext:
                 locale = None
             return ha, lat, lon, tz, locale
 
-        loop = asyncio.get_running_loop()
         try:
-            ha, lat, lon, tz, locale = await loop.run_in_executor(None, _init)
+            ha, lat, lon, tz, locale = await self._call_in_thread(_init)
         except Exception as exc:
             self._ha_error = f"Home Assistant connection failed: {exc}"
             raise
@@ -228,9 +256,9 @@ class AppContext:
         if self._ha is None or self._lat is None or self._lon is None or self._tz is None:
             raise RuntimeError("Home Assistant not initialized")
 
-        loop = asyncio.get_running_loop()
-        snapshot = await loop.run_in_executor(
-            None,
+        initial_soc = await self._get_initial_soc()
+        wear_cost = max(0.0, float(self._battery_wear_cost))
+        snapshot = await self._call_in_thread(
             self._compute_snapshot,
             self._ha,
             self._lat,
@@ -239,6 +267,8 @@ class AppContext:
             stat_ids,
             rename_map,
             scales,
+            initial_soc,
+            wear_cost,
         )
 
         async with self._lock:
@@ -254,6 +284,8 @@ class AppContext:
         stat_ids: List[Tuple[str, str]],
         rename_map: Dict[str, str],
         scales: Dict[str, float],
+        initial_soc: Optional[float],
+        wear_cost_eur_per_kwh: float,
     ) -> ForecastSnapshot:
         now = datetime.now(timezone.utc)
         preds = run_prediction_pipeline(
@@ -274,7 +306,11 @@ class AppContext:
             load_series = preds["house_pred"][TARGET_COL].reindex(pv_forecast.index)
         else:
             load_series = pd.Series(index=pv_forecast.index, dtype=float)
-        load_series = load_series.fillna(method="ffill").fillna(method="bfill").clip(lower=0.0)
+        load_series = pd.to_numeric(load_series, errors="coerce")
+        load_series = load_series.ffill().bfill()
+        if load_series.isna().any():
+            load_series = load_series.fillna(0.0)
+        load_series = load_series.clip(lower=0.0)
         pv_series = pv_forecast.clip(lower=0.0)
 
         price_series, price_imputed = self._build_price_series(tz, pv_series.index)
@@ -290,7 +326,13 @@ class AppContext:
             index=pv_series.index,
         )
 
-        plan = solve_lp_optimal_control(S, self._battery_cfg, soc0=None, allow_grid_charging=True)
+        plan = solve_lp_optimal_control(
+            S,
+            self._battery_cfg,
+            deg_eur_per_kwh=max(0.0, float(wear_cost_eur_per_kwh)),
+            soc0=initial_soc,
+            allow_grid_charging=True,
+        )
         plan.index = pv_series.index
 
         summary = self._summarize_plan(plan)
@@ -446,12 +488,14 @@ class AppContext:
             return False
 
         changed = False
+        catalog_changed = False
         async with self._settings_lock:
             settings = self._settings
             inverter = settings.inverter
 
             def _apply(key: str, selection) -> None:
                 nonlocal changed
+                nonlocal catalog_changed
                 block = data.get(key)
                 if not isinstance(block, dict):
                     return
@@ -464,13 +508,35 @@ class AppContext:
                 if selection.entity_id != entity_id:
                     selection.entity_id = entity_id
                     changed = True
+                    catalog_changed = True
                 unit = block.get("unit") or (meta.get("unit") if meta else selection.unit)
                 if unit and selection.unit != unit:
                     selection.unit = unit
                     changed = True
+                    catalog_changed = True
 
             _apply("house_consumption", inverter.house_consumption)
             _apply("pv_power", inverter.pv_power)
+
+            if "export_power_limited" in data:
+                flag = data.get("export_power_limited")
+                if isinstance(flag, str):
+                    normalized = flag.strip().lower()
+                    if normalized in {"true", "1", "yes", "on"}:
+                        flag_bool = True
+                    elif normalized in {"false", "0", "no", "off"}:
+                        flag_bool = False
+                    else:
+                        raise ValueError("export_power_limited must be a boolean")
+                elif isinstance(flag, bool):
+                    flag_bool = flag
+                elif flag is None:
+                    flag_bool = False
+                else:
+                    raise ValueError("export_power_limited must be a boolean")
+                if inverter.export_power_limited != flag_bool:
+                    inverter.export_power_limited = flag_bool
+                    changed = True
 
             if changed:
                 save_settings(settings)
@@ -478,11 +544,80 @@ class AppContext:
 
         serialized = await self._attach_recorder_status(serialized)
 
-        if changed:
+        if catalog_changed:
             await self.refresh_statistics_catalog()
             await self.refresh_entity_catalog()
         elif not self._entity_catalog:
             await self.refresh_entity_catalog()
+        return {
+            "settings": serialized,
+            "statistics": list(self._stat_catalog),
+            "entities": list(self._entity_catalog),
+        }
+
+    async def update_battery_settings(self, data: Dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValueError("Payload must be an object")
+
+        entities = await self.refresh_entity_catalog()
+        entity_map = {
+            item.get("entity_id"): item
+            for item in entities
+            if isinstance(item, dict) and item.get("category") == "battery" and item.get("entity_id")
+        }
+
+        changed = False
+        async with self._settings_lock:
+            battery = self._settings.battery
+            block = data.get("soc_sensor")
+            if block is None:
+                if battery.soc_sensor is not None:
+                    battery.soc_sensor = None
+                    changed = True
+            elif isinstance(block, dict):
+                entity_id = block.get("entity_id")
+                if not entity_id:
+                    if battery.soc_sensor is not None:
+                        battery.soc_sensor = None
+                        changed = True
+                else:
+                    meta = entity_map.get(entity_id)
+                    if meta is None:
+                        raise ValueError("Sensor not found or not supported for battery SoC")
+                    if battery.soc_sensor is None or battery.soc_sensor.entity_id != entity_id:
+                        battery.soc_sensor = EntitySelection(entity_id=entity_id, unit=meta.get("unit"))
+                        changed = True
+                    else:
+                        unit = block.get("unit") or meta.get("unit")
+                        if unit and battery.soc_sensor.unit != unit:
+                            battery.soc_sensor.unit = unit
+                            changed = True
+            else:
+                raise ValueError("soc_sensor must be null or an object with entity_id")
+
+            if "wear_cost_eur_per_kwh" in data:
+                raw_cost = data.get("wear_cost_eur_per_kwh")
+                try:
+                    cost_value = float(raw_cost)
+                except (TypeError, ValueError):
+                    raise ValueError("wear_cost_eur_per_kwh must be a number") from None
+                if not math.isfinite(cost_value) or cost_value < 0:
+                    raise ValueError("wear_cost_eur_per_kwh must be a non-negative finite number")
+                if not math.isclose(battery.wear_cost_eur_per_kwh, cost_value, rel_tol=1e-9, abs_tol=1e-9):
+                    battery.wear_cost_eur_per_kwh = cost_value
+                    changed = True
+
+            self._battery_wear_cost = battery.wear_cost_eur_per_kwh
+
+            if changed:
+                save_settings(self._settings)
+            serialized = self._serialize_settings(self._settings)
+
+        if not self._stat_catalog:
+            await self.refresh_statistics_catalog()
+        if not self._entity_catalog:
+            await self.refresh_entity_catalog()
+        serialized = await self._attach_recorder_status(serialized)
         return {
             "settings": serialized,
             "statistics": list(self._stat_catalog),
@@ -497,9 +632,8 @@ class AppContext:
         if self._ha is None:
             return self._stat_catalog
 
-        loop = asyncio.get_running_loop()
         try:
-            catalog = await loop.run_in_executor(None, self._ha.list_statistic_ids_sync)
+            catalog = await self._call_in_thread(self._ha.list_statistic_ids_sync)
         except Exception as exc:  # pragma: no cover - best-effort logging
             _LOGGER.debug("Failed to fetch statistic metadata: %s", exc)
             return self._stat_catalog
@@ -516,15 +650,16 @@ class AppContext:
         if self._ha is None:
             return self._entity_catalog
 
-        loop = asyncio.get_running_loop()
         try:
-            entities = await loop.run_in_executor(None, self._ha.list_entities_sync)
+            entities = await self._call_in_thread(self._ha.list_entities_sync)
         except Exception as exc:  # pragma: no cover - best-effort logging
             _LOGGER.debug("Failed to fetch entity metadata: %s", exc)
             return self._entity_catalog
 
-        allowed_units = {"w", "kw", "mw", "wh", "kwh", "mwh"}
+        allowed_power_units = {"w", "kw", "mw", "wh", "kwh", "mwh"}
+        percent_units = {"%", "percent", "percentage"}
         filtered: list[dict[str, Any]] = []
+        allowed_domains = {"sensor", "number", "input_number"}
         for entry in entities:
             if not isinstance(entry, dict):
                 continue
@@ -532,13 +667,18 @@ class AppContext:
             if not entity_id:
                 continue
             domain = entity_id.split(".", 1)[0]
-            if domain != "sensor":
+            if domain not in allowed_domains:
                 continue
             attrs = entry.get("attributes") or {}
             device_class = (attrs.get("device_class") or "").lower()
             unit = attrs.get("unit_of_measurement")
             unit_norm = unit.lower() if isinstance(unit, str) else None
-            if device_class not in {"power", "energy"} and (unit_norm not in allowed_units):
+            category = None
+            if device_class in {"power", "energy"} or (unit_norm in allowed_power_units):
+                category = "power"
+            elif device_class in {"battery"} or (unit_norm in percent_units):
+                category = "battery"
+            if category is None:
                 continue
             filtered.append(
                 {
@@ -548,6 +688,7 @@ class AppContext:
                     "unit": unit,
                     "state": entry.get("state"),
                     "domain": domain,
+                    "category": category,
                 }
             )
 
@@ -624,12 +765,8 @@ class AppContext:
     async def _probe_statistic_metadata(self, stat_id: str, unit: Optional[str]) -> Optional[dict[str, Any]]:
         if not stat_id or self._ha is None:
             return None
-        loop = asyncio.get_running_loop()
         try:
-            df = await loop.run_in_executor(
-                None,
-                lambda: self._ha.fetch_last_hours_sync([(stat_id, "mean")], hours=48),
-            )
+            df = await self._call_in_thread(self._ha.fetch_last_hours_sync, [(stat_id, "mean")], 48)
         except Exception as exc:  # pragma: no cover - diagnostic aid
             _LOGGER.debug("Probe for statistic '%s' failed: %s", stat_id, exc)
             return None
@@ -656,6 +793,18 @@ class AppContext:
 
     def _serialize_settings(self, settings: AppSettings) -> dict[str, Any]:
         inverter = settings.inverter
+        battery = settings.battery
+        battery_block: dict[str, Any]
+        if battery.soc_sensor:
+            battery_block = {
+                "soc_sensor": {
+                    "entity_id": battery.soc_sensor.entity_id,
+                    "unit": battery.soc_sensor.unit,
+                }
+            }
+        else:
+            battery_block = {"soc_sensor": None}
+        battery_block["wear_cost_eur_per_kwh"] = float(battery.wear_cost_eur_per_kwh)
         return {
             "inverter": {
                 "house_consumption": {
@@ -668,8 +817,70 @@ class AppContext:
                     "unit": inverter.pv_power.unit,
                     "scale_to_kw": inverter.pv_power.scale_to_kw(),
                 },
-            }
+                "export_power_limited": bool(inverter.export_power_limited),
+            },
+            "battery": battery_block,
         }
+
+    async def _get_initial_soc(self) -> Optional[float]:
+        async with self._settings_lock:
+            selection = self._settings.battery.soc_sensor if self._settings.battery else None
+            entity_id = selection.entity_id if selection else None
+            stored_unit = selection.unit if selection else None
+        if not entity_id:
+            return None
+
+        await self._ensure_home_assistant()
+        if self._ha is None:
+            return None
+
+        try:
+            state = await self._call_in_thread(self._ha.get_entity_state_sync, entity_id)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            _LOGGER.debug("Failed to fetch battery SoC from '%s': %s", entity_id, exc)
+            return None
+
+        if not state:
+            return None
+
+        raw_value = state.get("state")
+        try:
+            numeric = float(raw_value)
+        except (TypeError, ValueError):
+            _LOGGER.debug("Battery SoC sensor '%s' returned non-numeric state '%s'", entity_id, raw_value)
+            return None
+
+        attributes = state.get("attributes") or {}
+        state_unit = attributes.get("unit_of_measurement") if isinstance(attributes, dict) else None
+        unit_for_norm = state_unit or stored_unit
+
+        if state_unit and state_unit != stored_unit:
+            async with self._settings_lock:
+                current = self._settings.battery.soc_sensor if self._settings.battery else None
+                if current and current.entity_id == entity_id and current.unit != state_unit:
+                    current.unit = state_unit
+                    save_settings(self._settings)
+            unit_for_norm = state_unit
+
+        fraction = self._normalize_soc(numeric, unit_for_norm)
+        if fraction is None:
+            return None
+        return fraction
+
+    @staticmethod
+    def _normalize_soc(value: float, unit: Optional[str]) -> Optional[float]:
+        if not math.isfinite(value):
+            return None
+        unit_clean = unit.strip().lower() if isinstance(unit, str) else None
+        if unit_clean in {"%", "percent", "percentage"}:
+            value = value / 100.0
+        elif unit_clean in {"fraction", "ratio"}:
+            pass
+        elif value > 1.5 and not unit_clean:
+            # Heuristic: treat large values without units as percentage inputs.
+            value = value / 100.0
+        fraction = float(np.clip(value, 0.0, 1.0))
+        return fraction
 
     @staticmethod
     def _summarize_plan(plan: pd.DataFrame) -> dict[str, float]:
@@ -736,8 +947,7 @@ class AppContext:
         scales: Dict[str, float],
     ) -> None:
         try:
-            await asyncio.get_running_loop().run_in_executor(
-                None,
+            await self._call_in_thread(
                 self._run_training_sync,
                 stat_ids,
                 rename_map,

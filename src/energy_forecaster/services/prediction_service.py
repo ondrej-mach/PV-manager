@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 import os
+import time
+import logging
 import pandas as pd
 import numpy as np
 from joblib import load
@@ -13,6 +15,8 @@ from energy_forecaster.features.data_prep import (
     TARGET_COL,
     PV_COL,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def load_models(models_dir: str) -> Tuple[object, object]:
@@ -51,10 +55,16 @@ def run_prediction_pipeline(
     ENTITIES = entities or [("sensor.house_consumption", "mean"), ("sensor.pv_power", "mean")]
 
     # For lags we need at least 72 hours of history
+    timings: Dict[str, float] = {}
+
+    t0 = time.perf_counter()
     ha_recent_raw = ha.fetch_last_hours_sync(ENTITIES, hours=max(72, horizon_hours + 72), period="5minute")
+    timings["ha_fetch"] = time.perf_counter() - t0
 
     # Weather forecast (hourly) for the horizon
+    t0 = time.perf_counter()
     wx_forecast = fetch_openmeteo_forecast(lat=lat, lon=lon, tz=tz, hours=horizon_hours, use_mock=use_mock_weather)
+    timings["wx_fetch"] = time.perf_counter() - t0
 
     # Upsample weather to match requested interval
     if interval_minutes < 60:
@@ -72,6 +82,7 @@ def run_prediction_pipeline(
         future_index = wx_forecast.index
 
     # Build features
+    t0 = time.perf_counter()
     feats = assemble_forecast_features(
         ha_recent_raw,
         wx_upsampled,
@@ -79,6 +90,7 @@ def run_prediction_pipeline(
         rename_map=rename_map,
         scales=scales,
     )
+    timings["feature_build"] = time.perf_counter() - t0
     pv_X = feats["pv_X"]
     house_X_template = feats["house_X"]
     ha_norm = feats["ha_norm"]
@@ -87,7 +99,9 @@ def run_prediction_pipeline(
     house_model, pv_model = load_models(models_dir)
 
     # Predict PV first
+    t0 = time.perf_counter()
     pv_pred_values = pv_model.predict(pv_X.values)
+    timings["pv_predict"] = time.perf_counter() - t0
     pv_pred = pd.DataFrame({PV_COL: pv_pred_values}, index=pv_X.index)
     pv_pred[PV_COL] = pv_pred[PV_COL].clip(lower=0.0)
 
@@ -99,15 +113,38 @@ def run_prediction_pipeline(
     house_X_clean = house_X.dropna()
     house_pred_idx = house_X_clean.index
     if len(house_pred_idx) == 0:
+        _LOGGER.info(
+            "Prediction pipeline timings: HA %.2fs | weather %.2fs | features %.2fs | pv %.2fs | house (skipped); rows: ha=%d weather=%d",
+            timings.get("ha_fetch", 0.0),
+            timings.get("wx_fetch", 0.0),
+            timings.get("feature_build", 0.0),
+            timings.get("pv_predict", 0.0),
+            len(ha_recent_raw),
+            len(wx_forecast),
+        )
         return {
             "pv_pred": pv_pred,
             "house_pred": pd.DataFrame(columns=[TARGET_COL], index=pv_pred.index),
             "ha_recent": ha_norm,
         }
 
+    t0 = time.perf_counter()
     house_pred_values = house_model.predict(house_X_clean.values)
+    timings["house_predict"] = time.perf_counter() - t0
     house_pred = pd.DataFrame({TARGET_COL: house_pred_values}, index=house_pred_idx)
     house_pred[TARGET_COL] = house_pred[TARGET_COL].clip(lower=0.0)
+
+    _LOGGER.info(
+        "Prediction pipeline timings: HA %.2fs | weather %.2fs | features %.2fs | pv %.2fs | house %.2fs; rows: ha=%d weather=%d preds=%d",
+        timings.get("ha_fetch", 0.0),
+        timings.get("wx_fetch", 0.0),
+        timings.get("feature_build", 0.0),
+        timings.get("pv_predict", 0.0),
+        timings.get("house_predict", 0.0),
+        len(ha_recent_raw),
+        len(wx_forecast),
+        len(pv_pred),
+    )
 
     return {
         "pv_pred": pv_pred,

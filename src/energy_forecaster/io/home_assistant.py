@@ -31,50 +31,66 @@ class HomeAssistant:
         self._thread: Optional[threading.Thread] = None
         self._cached_config: Optional[Dict[str, Any]] = None
         self._cached_stat_metadata: Optional[List[Dict[str, Any]]] = None
+        self._ws_lock: Optional[asyncio.Lock] = None
+        self._ws_lock_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._connection_lock: Optional[asyncio.Lock] = None
+        self._connection_lock_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def _get_lock_for_loop(self, attr: str, loop_attr: str) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        lock: Optional[asyncio.Lock] = getattr(self, attr)
+        lock_loop: Optional[asyncio.AbstractEventLoop] = getattr(self, loop_attr)
+        if lock is None or lock_loop is not loop:
+            lock = asyncio.Lock()
+            setattr(self, attr, lock)
+            setattr(self, loop_attr, loop)
+        return lock
         
     async def _ensure_connected(self) -> WebSocketClientProtocol:
         """Ensure WebSocket connection is established and authenticated.
         
         Reuses existing connection if still open, otherwise creates a new one.
         """
-        # Check if we have an existing connection that's still open
-        if self._ws:
-            # Check if connection is still alive
-            try:
-                # The websockets library's connection has an 'open' property
-                if hasattr(self._ws, 'open') and self._ws.open:
-                    return self._ws
-                # Fallback: check if 'closed' attribute exists and is False
-                if hasattr(self._ws, 'closed') and not self._ws.closed:
-                    return self._ws
-            except Exception:
-                # If checking the state fails, assume connection is dead
-                self._ws = None
-            
-        if not self.token:
-            raise RuntimeError("No authentication token available")
-            
-        # Establish new connection
-        self._ws = await websockets.connect(self.url)
-        await self._ws.recv()  # auth required message
-        await self._ws.send(json.dumps({"type": "auth", "access_token": self.token}))
-        auth_resp = json.loads(await self._ws.recv())
-        
-        if auth_resp["type"] != "auth_ok":
-            await self._ws.close()
-            raise RuntimeError("Authentication failed")
-            
-        return self._ws
+        lock = self._get_lock_for_loop("_connection_lock", "_connection_lock_loop")
+        async with lock:
+            # Re-check connection inside the lock in case another coroutine already reconnected
+            if self._ws:
+                try:
+                    if hasattr(self._ws, "open") and self._ws.open:
+                        return self._ws
+                    if hasattr(self._ws, "closed") and not self._ws.closed:
+                        return self._ws
+                except Exception:
+                    self._ws = None
+
+            if not self.token:
+                raise RuntimeError("No authentication token available")
+
+            ws = await websockets.connect(self.url)
+            await ws.recv()  # auth required message
+            await ws.send(json.dumps({"type": "auth", "access_token": self.token}))
+            auth_resp = json.loads(await ws.recv())
+
+            if auth_resp.get("type") != "auth_ok":
+                await ws.close()
+                raise RuntimeError("Authentication failed")
+
+            self._ws = ws
+            # Reset message counter on new connection so ids stay consistent
+            self._msg_id = 1
+            return self._ws
         
     async def _send_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """Send a message and receive response via WebSocket."""
         ws = await self._ensure_connected()
-        if "id" not in message:
-            message["id"] = self._msg_id
-            self._msg_id += 1
-            
-        await ws.send(json.dumps(message))
-        return json.loads(await ws.recv())
+        lock = self._get_lock_for_loop("_ws_lock", "_ws_lock_loop")
+        async with lock:
+            if "id" not in message:
+                message["id"] = self._msg_id
+                self._msg_id += 1
+
+            await ws.send(json.dumps(message))
+            return json.loads(await ws.recv())
         
     async def fetch_config_async(self) -> Optional[Dict]:
         """Fetch Home Assistant core configuration including location and timezone."""
@@ -179,7 +195,7 @@ class HomeAssistant:
                 }
                 
                 resp = await self._send_message(req)
-                stats = resp.get("result", {}).get("response", {}).get("statistics", {})
+                stats = self._normalize_statistics_response(resp)
 
                 for entity in entities:
                     if entity in stats:
@@ -251,7 +267,7 @@ class HomeAssistant:
         }
 
         resp = await self._send_message(req)
-        stats = resp.get("result", {}).get("response", {}).get("statistics", {})
+        stats = self._normalize_statistics_response(resp)
 
         frames = []
         for entity in entities:
@@ -270,6 +286,25 @@ class HomeAssistant:
         if frames:
             return pd.concat(frames, axis=1).sort_index()
         return pd.DataFrame()
+
+    @staticmethod
+    def _normalize_statistics_response(resp: Any) -> Dict[str, Any]:
+        payload = resp
+        if isinstance(payload, list):
+            payload = payload[0] if payload else {}
+        if not isinstance(payload, dict):
+            return {}
+        # payload may already be the statistics dict
+        result = payload.get("result", payload)
+        if isinstance(result, list):
+            result = result[0] if result else {}
+        if isinstance(result, dict) and "response" in result:
+            result = result["response"]
+        if isinstance(result, dict):
+            stats = result.get("statistics")
+            if isinstance(stats, dict):
+                return stats
+        return {}
 
     async def list_statistic_ids_async(self, include_units: bool = True) -> List[Dict[str, Any]]:
         """Return statistic metadata (id, names, units) from Home Assistant recorder."""
@@ -340,6 +375,22 @@ class HomeAssistant:
             fut = asyncio.run_coroutine_threadsafe(self.list_entities_async(), self._loop)
             return fut.result()
         return asyncio.run(self.list_entities_async())
+
+    async def get_state_async(self, entity_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch current state record for a specific entity."""
+        if not entity_id:
+            return None
+        states = await self.list_entities_async()
+        for entry in states:
+            if isinstance(entry, dict) and entry.get("entity_id") == entity_id:
+                return entry
+        return None
+
+    def get_entity_state_sync(self, entity_id: str) -> Optional[Dict[str, Any]]:
+        if self._loop:
+            fut = asyncio.run_coroutine_threadsafe(self.get_state_async(entity_id), self._loop)
+            return fut.result()
+        return asyncio.run(self.get_state_async(entity_id))
 
     def fetch_last_hours_sync(
         self,

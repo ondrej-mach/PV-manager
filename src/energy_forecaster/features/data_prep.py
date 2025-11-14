@@ -86,6 +86,22 @@ def normalize_ha(
 ) -> pd.DataFrame:
     """Normalize HA data: rename columns, resample to hourly, convert using provided scales."""
     out = df.rename(columns=rename)
+
+    # Guard against empty frames coming back with a RangeIndex when Home Assistant has no data yet.
+    if not isinstance(out.index, pd.DatetimeIndex):
+        if out.empty:
+            out = out.copy()
+            out.index = pd.DatetimeIndex([], tz="UTC")
+        else:
+            coerced_index = pd.to_datetime(out.index, utc=True, errors="coerce")
+            if coerced_index.isna().any():
+                raise TypeError(
+                    "normalize_ha expected a DatetimeIndex; failed to coerce non-empty index to timestamps."
+                )
+            out = out.copy()
+            out.index = coerced_index
+
+    out = out.sort_index()
     out = out.resample("h").mean()
     scales = scales or {}
     for c, factor in scales.items():
@@ -186,7 +202,11 @@ def assemble_forecast_features(
     # Build PV lag 24h for future index from recent history
     pv_hist = ha.get(PV_COL)
     if pv_hist is not None and isinstance(pv_hist, pd.Series):
-        pv_lag24 = lag_series(pv_hist, 24)
+        pv_hist = pv_hist.sort_index()
+        pv_hist = pv_hist.resample("h").mean()
+        pv_lag_source = pv_hist.shift(24)
+        pv_lag24 = pv_lag_source.reindex(base_future.index)
+        pv_lag24 = pv_lag24.interpolate(method="time").fillna(0.0)
     else:
         pv_lag24 = pd.Series(index=base_future.index, dtype=float)
 
