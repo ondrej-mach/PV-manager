@@ -1,5 +1,6 @@
 
 from typing import List
+import numpy as np
 import pandas as pd
 import requests_cache
 from retry_requests import retry
@@ -24,6 +25,7 @@ def fetch_openmeteo_archive(
         "temperature_2m","relative_humidity_2m","dew_point_2m","rain","precipitation","snowfall",
         "snow_depth","weather_code","pressure_msl","cloud_cover","wind_speed_10m","wind_speed_100m",
         "vapour_pressure_deficit","et0_fao_evapotranspiration",
+        "shortwave_radiation","direct_radiation","diffuse_radiation","direct_normal_irradiance",
     ]
     params = {
         "latitude": lat,
@@ -48,10 +50,16 @@ def fetch_openmeteo_archive(
     # keep timestamps tz-aware in UTC
     data = {"timestamp": idx}
     for i, name in enumerate(hourly_vars):
-        data[name] = hourly.Variables(i).ValuesAsNumpy()
+        values = hourly.Variables(i).ValuesAsNumpy()
+        if values is None:
+            values = np.full(len(idx), np.nan)
+        data[name] = values
 
     wx = pd.DataFrame(data).set_index("timestamp").sort_index()
-    wx = wx.astype(float).resample("h").mean()
+    for var in hourly_vars:
+        if var not in wx.columns:
+            wx[var] = 0.0
+    wx = wx.astype(float).fillna(0.0).resample("h").mean()
     return wx
 
 def fetch_openmeteo_forecast(
@@ -73,11 +81,11 @@ def fetch_openmeteo_forecast(
         "temperature_2m","relative_humidity_2m","dew_point_2m","rain","precipitation","snowfall",
         "snow_depth","weather_code","pressure_msl","cloud_cover","wind_speed_10m","wind_speed_100m",
         "vapour_pressure_deficit","et0_fao_evapotranspiration",
+        "shortwave_radiation","direct_radiation","diffuse_radiation","direct_normal_irradiance",
     ]
     
     if use_mock:
         # Generate mock forecast data for testing
-        import numpy as np
         now = pd.Timestamp.utcnow().tz_convert("UTC").ceil("h")
         timestamps = pd.date_range(start=now, periods=hours, freq="h")
         
@@ -98,6 +106,10 @@ def fetch_openmeteo_forecast(
             "wind_speed_100m": np.full(hours, 8.0),
             "vapour_pressure_deficit": np.full(hours, 0.5),
             "et0_fao_evapotranspiration": np.full(hours, 0.1),
+            "shortwave_radiation": 200 + 150 * np.clip(np.sin(np.arange(hours) * 2 * np.pi / 24), 0, None),
+            "direct_radiation": 150 + 120 * np.clip(np.sin(np.arange(hours) * 2 * np.pi / 24), 0, None),
+            "diffuse_radiation": 50 + 40 * np.clip(np.sin(np.arange(hours) * 2 * np.pi / 24), 0, None),
+            "direct_normal_irradiance": 250 + 180 * np.clip(np.sin(np.arange(hours) * 2 * np.pi / 24), 0, None),
         }
         return pd.DataFrame(data).set_index("timestamp")
     
@@ -127,7 +139,10 @@ def fetch_openmeteo_forecast(
         df_data[var] = hourly[var]
     
     wx = pd.DataFrame(df_data).set_index("timestamp").sort_index()
-    wx = wx.astype(float)
+    for var in hourly_vars:
+        if var not in wx.columns:
+            wx[var] = 0.0
+    wx = wx.astype(float).fillna(0.0)
     
     # Return only future data up to requested hours
     now = pd.Timestamp.now(tz="UTC")

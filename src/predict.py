@@ -64,18 +64,23 @@ def main():
             horizon_hours=HORIZON_HOURS,
             interval_minutes=INTERVAL_MINUTES,
             use_mock_weather=USE_MOCK_WEATHER,
+            return_features=True,
         )
 
         pv_pred = results["pv_pred"]
         house_pred = results["house_pred"]
         ha_recent = results["ha_recent"]
+        features = results.get("features", {})
+
+        output_dir = os.path.join(os.getcwd(), "output")
+        os.makedirs(output_dir, exist_ok=True)
 
         print(f"\n[PRED] ✓ Predictions complete:")
         print(f"  - PV: {len(pv_pred)} timesteps, range {pv_pred[PV_COL].min():.2f}-{pv_pred[PV_COL].max():.2f} kW")
         print(f"  - House: {len(house_pred)} timesteps, range {house_pred[TARGET_COL].min():.2f}-{house_pred[TARGET_COL].max():.2f} kW")
 
         # Plot PV: last 48h actual vs next horizon predicted
-        fig1, ax1 = plt.subplots(figsize=(12,4))
+        fig1, ax1 = plt.subplots(figsize=(12, 4))
         recent_pv = ha_recent.get("pv_power_kw")
         if recent_pv is not None:
             recent_window = recent_pv.loc[pd.Timestamp.now(tz="UTC") - pd.Timedelta("48h"):]
@@ -86,14 +91,15 @@ def main():
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         fig1.tight_layout()
-        fig1.savefig("output/predictions_pv.png")
-        print("[PRED] Saved: output/predictions_pv.png")
+        pv_path = os.path.join(output_dir, "predictions_pv.png")
+        fig1.savefig(pv_path)
+        print(f"[PRED] Saved: {pv_path}")
 
         # Plot House load
-        fig2, ax2 = plt.subplots(figsize=(12,4))
+        fig2, ax2 = plt.subplots(figsize=(12, 4))
         recent_cons = ha_recent.get("power_consumption_kw")
         if recent_cons is not None:
-            recent_window = recent_pv.loc[pd.Timestamp.now(tz="UTC") - pd.Timedelta("48h"):]
+            recent_window = recent_cons.loc[pd.Timestamp.now(tz="UTC") - pd.Timedelta("48h") :]
             ax2.plot(recent_window.index, recent_window.values, label="Load actual", color="#1f77b4", linewidth=1.5)
         ax2.plot(house_pred.index, house_pred["power_consumption_kw"].values, label="Load predicted", color="#2ca02c", linestyle=":", linewidth=2)
         ax2.set_title(f"House Load: Actual (last 48h) vs Predicted (next {HORIZON_HOURS}h at {INTERVAL_MINUTES}min intervals)")
@@ -101,8 +107,24 @@ def main():
         ax2.legend()
         ax2.grid(True, alpha=0.3)
         fig2.tight_layout()
-        fig2.savefig("output/predictions_house.png")
-        print("[PRED] Saved: output/predictions_house.png")
+        house_path = os.path.join(output_dir, "predictions_house.png")
+        fig2.savefig(house_path)
+        print(f"[PRED] Saved: {house_path}")
+
+        # Persist raw data for diagnostics
+        pv_pred.to_csv(os.path.join(output_dir, "pv_pred.csv"))
+        house_pred.to_csv(os.path.join(output_dir, "house_pred.csv"))
+        ha_recent.to_csv(os.path.join(output_dir, "ha_recent.csv"))
+        pv_feats = features.get("pv_X")
+        house_feats = features.get("house_X")
+        weather_feats = features.get("weather")
+        if isinstance(pv_feats, pd.DataFrame):
+            pv_feats.to_csv(os.path.join(output_dir, "pv_features.csv"))
+        if isinstance(house_feats, pd.DataFrame):
+            house_feats.to_csv(os.path.join(output_dir, "house_features.csv"))
+        if isinstance(weather_feats, pd.DataFrame):
+            weather_feats.to_csv(os.path.join(output_dir, "weather_forecast.csv"))
+        print("[PRED] Saved diagnostic CSVs to output/ directory")
 
     finally:
         import asyncio

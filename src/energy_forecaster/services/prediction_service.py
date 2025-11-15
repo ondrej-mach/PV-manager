@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import os
 import time
 import logging
@@ -39,7 +39,8 @@ def run_prediction_pipeline(
     entities: Optional[List[Tuple[str, str]]] = None,
     rename_map: Optional[Dict[str, str]] = None,
     scales: Optional[Dict[str, float]] = None,
-) -> Dict[str, pd.DataFrame]:
+    return_features: bool = False,
+) -> Dict[str, Any]:
     """Run end-to-end prediction using recent HA data and Open-Meteo forecast.
 
     Args:
@@ -100,10 +101,26 @@ def run_prediction_pipeline(
 
     # Predict PV first
     t0 = time.perf_counter()
+    expected_pv_features = getattr(pv_model, "n_features_in_", pv_X.shape[1])
+    if pv_X.shape[1] != expected_pv_features:
+        raise RuntimeError(
+            f"PV model expects {expected_pv_features} features but received {pv_X.shape[1]}. "
+            "Retrain models to pick up the latest weather inputs."
+        )
+
     pv_pred_values = pv_model.predict(pv_X.values)
     timings["pv_predict"] = time.perf_counter() - t0
     pv_pred = pd.DataFrame({PV_COL: pv_pred_values}, index=pv_X.index)
     pv_pred[PV_COL] = pv_pred[PV_COL].clip(lower=0.0)
+
+    # Enforce zero generation when the irradiance forecast says there is no daylight.
+    daylight_mask = None
+    if "shortwave_radiation" in pv_X.columns:
+        daylight_mask = pv_X["shortwave_radiation"] > 0.0
+        if daylight_mask.sum() > 0:
+            pv_pred.loc[~daylight_mask, PV_COL] = 0.0
+        else:
+            _LOGGER.debug("No positive irradiance values in forecast; skipping daylight clamp.")
 
     # Fill PV into house features
     house_X = house_X_template.copy()
@@ -111,6 +128,12 @@ def run_prediction_pipeline(
 
     # Restrict to rows where lags are available
     house_X_clean = house_X.dropna()
+    expected_house_features = getattr(house_model, "n_features_in_", house_X_clean.shape[1])
+    if house_X_clean.shape[1] != expected_house_features:
+        raise RuntimeError(
+            f"House model expects {expected_house_features} features but received {house_X_clean.shape[1]}. "
+            "Retrain models to stay in sync with feature engineering."
+        )
     house_pred_idx = house_X_clean.index
     if len(house_pred_idx) == 0:
         _LOGGER.info(
@@ -146,8 +169,16 @@ def run_prediction_pipeline(
         len(pv_pred),
     )
 
-    return {
+    result: Dict[str, pd.DataFrame] = {
         "pv_pred": pv_pred,
         "house_pred": house_pred,
         "ha_recent": ha_norm,
     }
+    if return_features:
+        result["features"] = {
+            "pv_X": pv_X,
+            "house_X": house_X,
+            "ha_norm": ha_norm,
+            "weather": wx_upsampled,
+        }
+    return result

@@ -17,10 +17,21 @@ WEATHER_FEATURES: List[str] = [
     "wind_speed_100m",
     "vapour_pressure_deficit",
     "et0_fao_evapotranspiration",
+    "shortwave_radiation",
+    "direct_radiation",
+    "diffuse_radiation",
+    "direct_normal_irradiance",
     "temperature_2m",
 ]
 
-OPTIONAL_WEATHER: List[str] = ["vapour_pressure_deficit", "et0_fao_evapotranspiration"]
+OPTIONAL_WEATHER: List[str] = [
+    "vapour_pressure_deficit",
+    "et0_fao_evapotranspiration",
+    "shortwave_radiation",
+    "direct_radiation",
+    "diffuse_radiation",
+    "direct_normal_irradiance",
+]
 
 TIME_FEATURES: List[str] = [
     "month_sin", "month_cos",
@@ -107,6 +118,13 @@ def normalize_ha(
     for c, factor in scales.items():
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce") * factor
+
+    # Clamp obvious sensor noise on PV readings (tiny non-zero values overnight).
+    if PV_COL in out.columns:
+        out[PV_COL] = out[PV_COL].clip(lower=0.0)
+        noise_mask = out[PV_COL] < 0.02  # 20 W noise floor
+        if noise_mask.any():
+            out.loc[noise_mask, PV_COL] = 0.0
     return out
 
 def assemble_training_frames(
@@ -128,6 +146,7 @@ def assemble_training_frames(
         "snow_depth","cloud_cover","weather_code","pressure_msl",
         "wind_speed_10m","wind_speed_100m",
         "vapour_pressure_deficit","et0_fao_evapotranspiration",
+        "shortwave_radiation","direct_radiation","diffuse_radiation","direct_normal_irradiance",
         *TIME_FEATURES,
         PV_COL, "house_consumption_lag24","house_consumption_lag48","house_consumption_lag72",
         "HDD","CDD","temp_sq",
@@ -139,6 +158,7 @@ def assemble_training_frames(
         "snow_depth","cloud_cover","weather_code","pressure_msl",
         "wind_speed_10m","wind_speed_100m",
         "vapour_pressure_deficit","et0_fao_evapotranspiration",
+        "shortwave_radiation","direct_radiation","diffuse_radiation","direct_normal_irradiance",
         *TIME_FEATURES,
         "pv_power_lag24",
         "HDD","CDD","temp_sq",
@@ -189,6 +209,10 @@ def assemble_forecast_features(
 
     # Compute engineered time/weather features on future timeline
     base_future = wx_future.copy()
+    # Ensure all expected weather columns are present even if the forecast API omits some of them
+    for col in WEATHER_FEATURES:
+        if col not in base_future.columns:
+            base_future[col] = 0.0
     base_future = add_hdd_cdd_temp_sq(base_future)
     base_future = add_time_features(base_future, tz=tz)
 
@@ -201,12 +225,9 @@ def assemble_forecast_features(
 
     # Build PV lag 24h for future index from recent history
     pv_hist = ha.get(PV_COL)
-    if pv_hist is not None and isinstance(pv_hist, pd.Series):
+    if isinstance(pv_hist, pd.Series):
         pv_hist = pv_hist.sort_index()
-        pv_hist = pv_hist.resample("h").mean()
-        pv_lag_source = pv_hist.shift(24)
-        pv_lag24 = pv_lag_source.reindex(base_future.index)
-        pv_lag24 = pv_lag24.interpolate(method="time").fillna(0.0)
+        pv_lag24 = lag_series(pv_hist, 24).fillna(0.0)
     else:
         pv_lag24 = pd.Series(index=base_future.index, dtype=float)
 
@@ -217,6 +238,7 @@ def assemble_forecast_features(
         "snow_depth","cloud_cover","weather_code","pressure_msl",
         "wind_speed_10m","wind_speed_100m",
         "vapour_pressure_deficit","et0_fao_evapotranspiration",
+        "shortwave_radiation","direct_radiation","diffuse_radiation","direct_normal_irradiance",
         *TIME_FEATURES,
         "pv_power_lag24",
         "HDD","CDD","temp_sq",
@@ -241,6 +263,7 @@ def assemble_forecast_features(
         "snow_depth","cloud_cover","weather_code","pressure_msl",
         "wind_speed_10m","wind_speed_100m",
         "vapour_pressure_deficit","et0_fao_evapotranspiration",
+        "shortwave_radiation","direct_radiation","diffuse_radiation","direct_normal_irradiance",
         *TIME_FEATURES,
         PV_COL,
         "house_consumption_lag24","house_consumption_lag48","house_consumption_lag72",

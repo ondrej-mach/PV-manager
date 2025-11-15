@@ -424,12 +424,14 @@ class AppContext:
         power = 0.0
 
         if net_batt > power_tol:
-            mode = "discharge"
-            power = net_batt
-            if batt_to_load >= batt_to_grid:
-                reason = "Covering load from battery"
-            else:
+            if batt_to_grid > power_tol:
+                mode = "discharge"
+                power = net_batt
                 reason = "Exporting surplus from battery"
+            else:
+                mode = "none"
+                power = 0.0
+                reason = "Covering load from battery"
         elif net_batt < -power_tol:
             mode = "charge"
             power = abs(net_batt)
@@ -569,31 +571,32 @@ class AppContext:
         changed = False
         async with self._settings_lock:
             battery = self._settings.battery
-            block = data.get("soc_sensor")
-            if block is None:
-                if battery.soc_sensor is not None:
-                    battery.soc_sensor = None
-                    changed = True
-            elif isinstance(block, dict):
-                entity_id = block.get("entity_id")
-                if not entity_id:
+            if "soc_sensor" in data:
+                block = data.get("soc_sensor")
+                if block is None:
                     if battery.soc_sensor is not None:
                         battery.soc_sensor = None
                         changed = True
-                else:
-                    meta = entity_map.get(entity_id)
-                    if meta is None:
-                        raise ValueError("Sensor not found or not supported for battery SoC")
-                    if battery.soc_sensor is None or battery.soc_sensor.entity_id != entity_id:
-                        battery.soc_sensor = EntitySelection(entity_id=entity_id, unit=meta.get("unit"))
-                        changed = True
-                    else:
-                        unit = block.get("unit") or meta.get("unit")
-                        if unit and battery.soc_sensor.unit != unit:
-                            battery.soc_sensor.unit = unit
+                elif isinstance(block, dict):
+                    entity_id = block.get("entity_id")
+                    if not entity_id:
+                        if battery.soc_sensor is not None:
+                            battery.soc_sensor = None
                             changed = True
-            else:
-                raise ValueError("soc_sensor must be null or an object with entity_id")
+                    else:
+                        meta = entity_map.get(entity_id)
+                        if meta is None:
+                            raise ValueError("Sensor not found or not supported for battery SoC")
+                        if battery.soc_sensor is None or battery.soc_sensor.entity_id != entity_id:
+                            battery.soc_sensor = EntitySelection(entity_id=entity_id, unit=meta.get("unit"))
+                            changed = True
+                        else:
+                            unit = block.get("unit") or meta.get("unit")
+                            if unit and battery.soc_sensor.unit != unit:
+                                battery.soc_sensor.unit = unit
+                                changed = True
+                else:
+                    raise ValueError("soc_sensor must be null or an object with entity_id")
 
             if "wear_cost_eur_per_kwh" in data:
                 raw_cost = data.get("wear_cost_eur_per_kwh")

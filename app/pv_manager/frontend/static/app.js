@@ -472,7 +472,7 @@ function renderInverterForm() {
         houseTrigger,
         houseLabel,
         inverterSettings.house_consumption,
-        'Select house sensor',
+        'None selected',
         inverterBusy,
         powerEntityCatalog.length > 0,
     );
@@ -480,7 +480,7 @@ function renderInverterForm() {
         pvTrigger,
         pvLabel,
         inverterSettings.pv_power,
-        'Select PV sensor',
+        'None selected',
         inverterBusy,
         powerEntityCatalog.length > 0,
     );
@@ -511,7 +511,7 @@ function renderBatteryForm() {
         batteryTrigger,
         batteryLabel,
         selection,
-        'Select battery SoC sensor',
+        'None selected',
         batteryBusy,
         batteryEntityCatalog.length > 0,
         true,
