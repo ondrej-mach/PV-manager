@@ -1,13 +1,82 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+import math
+import re
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from energy_forecaster.features.data_prep import PV_COL, TARGET_COL
 
 _CONFIG_PATH = Path(__file__).resolve().parent / "settings.json"
+
+TARIFF_MODES = {"constant", "spot_plus_constant", "dual_rate"}
+
+
+def _sanitize_float(value: Any, *, allow_none: bool = True) -> Optional[float]:
+    if value is None:
+        return None if allow_none else None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None if allow_none else None
+    if not math.isfinite(numeric):
+        return None if allow_none else None
+    return numeric
+
+
+def _sanitize_time_literal(value: Any, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    candidate = value.strip()
+    if not candidate:
+        return fallback
+    if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", candidate):
+        return candidate
+    return fallback
+
+
+def _default_import_tariff() -> "TariffSettings":
+    return TariffSettings(spot_offset_eur_per_kwh=0.14)
+
+
+def _default_export_tariff() -> "TariffSettings":
+    return TariffSettings()
+
+
+@dataclass
+class TariffSettings:
+    mode: str = "spot_plus_constant"
+    constant_eur_per_kwh: Optional[float] = None
+    spot_offset_eur_per_kwh: float = 0.0
+    dual_peak_eur_per_kwh: Optional[float] = None
+    dual_offpeak_eur_per_kwh: Optional[float] = None
+    dual_peak_start_local: str = "07:00"
+    dual_peak_end_local: str = "21:00"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "constant_eur_per_kwh": None if self.constant_eur_per_kwh is None else float(self.constant_eur_per_kwh),
+            "spot_offset_eur_per_kwh": float(self.spot_offset_eur_per_kwh),
+            "dual_peak_eur_per_kwh": None if self.dual_peak_eur_per_kwh is None else float(self.dual_peak_eur_per_kwh),
+            "dual_offpeak_eur_per_kwh": None if self.dual_offpeak_eur_per_kwh is None else float(self.dual_offpeak_eur_per_kwh),
+            "dual_peak_start_local": self.dual_peak_start_local,
+            "dual_peak_end_local": self.dual_peak_end_local,
+        }
+
+
+@dataclass
+class PricingSettings:
+    import_tariff: TariffSettings = field(default_factory=_default_import_tariff)
+    export_tariff: TariffSettings = field(default_factory=_default_export_tariff)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "import": self.import_tariff.to_dict(),
+            "export": self.export_tariff.to_dict(),
+        }
 
 
 @dataclass
@@ -54,6 +123,7 @@ class BatterySettings:
 class AppSettings:
     inverter: InverterSettings
     battery: BatterySettings = field(default_factory=BatterySettings)
+    pricing: PricingSettings = field(default_factory=PricingSettings)
 
     def to_dict(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -70,6 +140,7 @@ class AppSettings:
         else:
             payload["battery"] = {"soc_sensor": None}
         payload["battery"]["wear_cost_eur_per_kwh"] = float(self.battery.wear_cost_eur_per_kwh)
+        payload["pricing"] = self.pricing.to_dict()
         return payload
 
 
@@ -80,6 +151,7 @@ _DEFAULT_SETTINGS = AppSettings(
         export_power_limited=False,
     ),
     battery=BatterySettings(soc_sensor=None),
+    pricing=PricingSettings(),
 )
 
 
@@ -132,6 +204,9 @@ def load_settings() -> AppSettings:
     if wear_cost_val < 0 or wear_cost_val != wear_cost_val:  # also guard NaN
         wear_cost_val = _DEFAULT_SETTINGS.battery.wear_cost_eur_per_kwh
 
+    pricing_block = data.get("pricing")
+    pricing_settings = coerce_pricing_payload(pricing_block, _DEFAULT_SETTINGS.pricing)
+
     return AppSettings(
         inverter=InverterSettings(
             house_consumption=EntitySelection(
@@ -145,9 +220,51 @@ def load_settings() -> AppSettings:
             export_power_limited=export_limit,
         ),
         battery=BatterySettings(soc_sensor=soc_selection, wear_cost_eur_per_kwh=wear_cost_val),
+        pricing=pricing_settings,
     )
 
 
 def save_settings(settings: AppSettings) -> None:
     _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     _CONFIG_PATH.write_text(json.dumps(settings.to_dict(), indent=2), encoding="utf-8")
+
+
+def coerce_tariff_payload(payload: Any, base: Optional[TariffSettings], scope: str) -> TariffSettings:
+    defaults = _default_import_tariff() if scope == "import" else _default_export_tariff()
+    current = replace(base) if base is not None else replace(defaults)
+    if not isinstance(payload, dict):
+        return current
+    mode_raw = payload.get("mode")
+    if isinstance(mode_raw, str):
+        mode_val = mode_raw.strip()
+        if mode_val in TARIFF_MODES:
+            current.mode = mode_val
+    if "constant_eur_per_kwh" in payload:
+        constant_val = _sanitize_float(payload.get("constant_eur_per_kwh"))
+        current.constant_eur_per_kwh = constant_val
+    if "spot_offset_eur_per_kwh" in payload:
+        offset_val = _sanitize_float(payload.get("spot_offset_eur_per_kwh"), allow_none=False)
+        if offset_val is None:
+            offset_val = defaults.spot_offset_eur_per_kwh
+        current.spot_offset_eur_per_kwh = float(offset_val)
+    if "dual_peak_eur_per_kwh" in payload:
+        peak_val = _sanitize_float(payload.get("dual_peak_eur_per_kwh"))
+        current.dual_peak_eur_per_kwh = peak_val
+    if "dual_offpeak_eur_per_kwh" in payload:
+        offpeak_val = _sanitize_float(payload.get("dual_offpeak_eur_per_kwh"))
+        current.dual_offpeak_eur_per_kwh = offpeak_val
+    if "dual_peak_start_local" in payload:
+        current.dual_peak_start_local = _sanitize_time_literal(payload.get("dual_peak_start_local"), current.dual_peak_start_local or defaults.dual_peak_start_local)
+    if "dual_peak_end_local" in payload:
+        current.dual_peak_end_local = _sanitize_time_literal(payload.get("dual_peak_end_local"), current.dual_peak_end_local or defaults.dual_peak_end_local)
+    return current
+
+
+def coerce_pricing_payload(payload: Any, base: Optional[PricingSettings]) -> PricingSettings:
+    base_settings = base if base is not None else PricingSettings()
+    import_block = payload.get("import") if isinstance(payload, dict) else None
+    export_block = payload.get("export") if isinstance(payload, dict) else None
+    return PricingSettings(
+        import_tariff=coerce_tariff_payload(import_block, base_settings.import_tariff, "import"),
+        export_tariff=coerce_tariff_payload(export_block, base_settings.export_tariff, "export"),
+    )

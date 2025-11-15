@@ -11,7 +11,7 @@ let dateTimeFormatter;
 
 let forecastChart;
 let planChart;
-let historyChart;
+let gridChart;
 let priceImputedFlags = [];
 let showingSettings = false;
 let statisticsCatalog = [];
@@ -27,6 +27,7 @@ let lastTrainingRunning = false;
 let lastCycleRunning = false;
 let autoRefreshTimer = null;
 let pendingForecastRefresh = null;
+const TARIFF_MODES = ['constant', 'spot_plus_constant', 'dual_rate'];
 const houseTrigger = document.getElementById('houseEntityTrigger');
 const pvTrigger = document.getElementById('pvEntityTrigger');
 const batteryTrigger = document.getElementById('batterySocTrigger');
@@ -40,6 +41,26 @@ const inverterMessage = document.getElementById('inverterMessage');
 const batteryMessage = document.getElementById('batteryMessage');
 const batteryWearInput = document.getElementById('batteryWearInput');
 const batteryWearHint = document.getElementById('batteryWearHint');
+const pricingForm = document.getElementById('pricingForm');
+const pricingMessage = document.getElementById('pricingMessage');
+const savePricingBtn = document.getElementById('savePricingBtn');
+const resetPricingBtn = document.getElementById('resetPricingBtn');
+const importTariffModeSelect = document.getElementById('importTariffMode');
+const exportTariffModeSelect = document.getElementById('exportTariffMode');
+const importTariffHint = document.getElementById('importTariffHint');
+const exportTariffHint = document.getElementById('exportTariffHint');
+const importConstantInput = document.getElementById('importConstantPrice');
+const importSpotOffsetInput = document.getElementById('importSpotOffset');
+const importPeakRateInput = document.getElementById('importPeakRate');
+const importOffpeakRateInput = document.getElementById('importOffpeakRate');
+const importPeakStartInput = document.getElementById('importPeakStart');
+const importPeakEndInput = document.getElementById('importPeakEnd');
+const exportConstantInput = document.getElementById('exportConstantPrice');
+const exportSpotOffsetInput = document.getElementById('exportSpotOffset');
+const exportPeakRateInput = document.getElementById('exportPeakRate');
+const exportOffpeakRateInput = document.getElementById('exportOffpeakRate');
+const exportPeakStartInput = document.getElementById('exportPeakStart');
+const exportPeakEndInput = document.getElementById('exportPeakEnd');
 const entityModal = document.getElementById('entityModal');
 const entityModalBackdrop = document.getElementById('entityModalBackdrop');
 const entityModalClose = document.getElementById('entityModalClose');
@@ -49,6 +70,13 @@ const entityListContainer = document.getElementById('entityList');
 const exportLimitToggle = document.getElementById('exportLimitToggle');
 let batterySettings = null;
 let batteryBusy = false;
+let batteryMessageClearTimer = null;
+let pricingSettings = null;
+let pricingSaveTimer = null;
+let pricingSaving = false;
+let pricingPendingResave = false;
+let pricingMessageClearTimer = null;
+const PRICING_SAVE_DEBOUNCE_MS = 400;
 
 function computeHourCycle(locale) {
     if (!locale) return undefined;
@@ -102,8 +130,8 @@ function applyLocaleToCharts() {
     if (planChart) {
         planChart.options.locale = locale;
     }
-    if (historyChart) {
-        historyChart.options.locale = locale;
+    if (gridChart) {
+        gridChart.options.locale = locale;
     }
 }
 
@@ -313,8 +341,12 @@ function setInverterMessage(text, kind = 'info') {
     inverterMessage.textContent = text;
 }
 
-function setBatteryMessage(text, kind = 'info') {
+function setBatteryMessage(text, kind = 'info', autoHideMs = 0) {
     if (!batteryMessage) return;
+    if (batteryMessageClearTimer) {
+        clearTimeout(batteryMessageClearTimer);
+        batteryMessageClearTimer = null;
+    }
     if (!text) {
         batteryMessage.style.display = 'none';
         batteryMessage.textContent = '';
@@ -322,12 +354,18 @@ function setBatteryMessage(text, kind = 'info') {
         return;
     }
     batteryMessage.style.display = 'block';
+    batteryMessage.textContent = text;
     if (kind === 'error') {
         batteryMessage.classList.add('error');
     } else {
         batteryMessage.classList.remove('error');
     }
-    batteryMessage.textContent = text;
+    if (text && kind !== 'error' && autoHideMs > 0) {
+        batteryMessageClearTimer = setTimeout(() => {
+            batteryMessageClearTimer = null;
+            setBatteryMessage('');
+        }, autoHideMs);
+    }
 }
 
 function renderInverterHints() {
@@ -375,6 +413,88 @@ function refreshEntityCatalogs(list) {
     batteryEntityCatalog = filterBatteryEntities(entityCatalog);
 }
 
+function sanitizeTimeValue(value, fallback) {
+    if (typeof value !== 'string') {
+        return fallback;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return fallback;
+    }
+    return /^([01]\d|2[0-3]):[0-5]\d$/.test(trimmed) ? trimmed : fallback;
+}
+
+function defaultTariffConfig(scope) {
+    const isImport = scope === 'import';
+    return {
+        mode: 'spot_plus_constant',
+        constant_eur_per_kwh: null,
+        spot_offset_eur_per_kwh: isImport ? 0.14 : 0.0,
+        dual_peak_eur_per_kwh: null,
+        dual_offpeak_eur_per_kwh: null,
+        dual_peak_start_local: '07:00',
+        dual_peak_end_local: '21:00',
+    };
+}
+
+function defaultPricingSettings() {
+    return {
+        import: defaultTariffConfig('import'),
+        export: defaultTariffConfig('export'),
+    };
+}
+
+function normalizeTariffConfig(raw, scope) {
+    const defaults = defaultTariffConfig(scope);
+    const cfg = { ...defaults };
+    if (!raw || typeof raw !== 'object') {
+        return cfg;
+    }
+    if (typeof raw.mode === 'string') {
+        const normalizedMode = raw.mode.trim();
+        if (TARIFF_MODES.includes(normalizedMode)) {
+            cfg.mode = normalizedMode;
+        }
+    }
+    if (raw.constant_eur_per_kwh !== undefined) {
+        const val = Number(raw.constant_eur_per_kwh);
+        cfg.constant_eur_per_kwh = Number.isFinite(val) ? val : defaults.constant_eur_per_kwh;
+    }
+    if (raw.spot_offset_eur_per_kwh !== undefined) {
+        const val = Number(raw.spot_offset_eur_per_kwh);
+        cfg.spot_offset_eur_per_kwh = Number.isFinite(val) ? val : defaults.spot_offset_eur_per_kwh;
+    }
+    if (raw.dual_peak_eur_per_kwh !== undefined) {
+        const val = Number(raw.dual_peak_eur_per_kwh);
+        cfg.dual_peak_eur_per_kwh = Number.isFinite(val) ? val : defaults.dual_peak_eur_per_kwh;
+    }
+    if (raw.dual_offpeak_eur_per_kwh !== undefined) {
+        const val = Number(raw.dual_offpeak_eur_per_kwh);
+        cfg.dual_offpeak_eur_per_kwh = Number.isFinite(val) ? val : defaults.dual_offpeak_eur_per_kwh;
+    }
+    if (raw.dual_peak_start_local !== undefined) {
+        cfg.dual_peak_start_local = sanitizeTimeValue(raw.dual_peak_start_local, defaults.dual_peak_start_local);
+    }
+    if (raw.dual_peak_end_local !== undefined) {
+        cfg.dual_peak_end_local = sanitizeTimeValue(raw.dual_peak_end_local, defaults.dual_peak_end_local);
+    }
+    return cfg;
+}
+
+function normalizePricingSettings(raw) {
+    const settings = defaultPricingSettings();
+    if (!raw || typeof raw !== 'object') {
+        return settings;
+    }
+    if (raw.import) {
+        settings.import = normalizeTariffConfig(raw.import, 'import');
+    }
+    if (raw.export) {
+        settings.export = normalizeTariffConfig(raw.export, 'export');
+    }
+    return settings;
+}
+
 function applySettingsPayload(payload) {
     if (Array.isArray(payload.statistics)) {
         statisticsCatalog = payload.statistics;
@@ -400,9 +520,13 @@ function applySettingsPayload(payload) {
         } else if (typeof batterySettings.wear_cost_eur_per_kwh !== 'number') {
             batterySettings.wear_cost_eur_per_kwh = 0.1;
         }
+        if (payload.settings.pricing) {
+            pricingSettings = normalizePricingSettings(payload.settings.pricing);
+        }
     }
     renderInverterForm();
     renderBatteryForm();
+    renderPricingForm();
 }
 
 function filterPowerEntities(list) {
@@ -543,6 +667,254 @@ function renderBatteryForm() {
     if (batteryWearHint && !batteryWearHint.classList.contains('error')) {
         batteryWearHint.textContent = 'Applied as a throughput penalty in the optimization to limit excessive cycling.';
     }
+}
+
+function ensurePricingSettings() {
+    if (!pricingSettings || typeof pricingSettings !== 'object') {
+        pricingSettings = defaultPricingSettings();
+    }
+    if (!pricingSettings.import) {
+        pricingSettings.import = defaultTariffConfig('import');
+    }
+    if (!pricingSettings.export) {
+        pricingSettings.export = defaultTariffConfig('export');
+    }
+    return pricingSettings;
+}
+
+function setPricingMessage(text, kind = 'info', autoHideMs = 0) {
+    if (!pricingMessage) return;
+    if (pricingMessageClearTimer) {
+        clearTimeout(pricingMessageClearTimer);
+        pricingMessageClearTimer = null;
+    }
+    if (!text) {
+        pricingMessage.style.display = 'none';
+        pricingMessage.textContent = '';
+        pricingMessage.classList.remove('error');
+        return;
+    }
+    pricingMessage.style.display = 'block';
+    pricingMessage.textContent = text;
+    pricingMessage.classList.remove('error');
+    if (kind === 'error') {
+        pricingMessage.classList.add('error');
+    }
+    if (text && kind !== 'error' && autoHideMs > 0) {
+        pricingMessageClearTimer = setTimeout(() => {
+            pricingMessageClearTimer = null;
+            setPricingMessage('');
+        }, autoHideMs);
+    }
+}
+
+function setNumericInputValue(input, value) {
+    if (!input) return;
+    if (Number.isFinite(value)) {
+        input.value = value.toString();
+    } else if (value === null || value === undefined) {
+        input.value = '';
+    } else {
+        const parsed = Number(value);
+        input.value = Number.isFinite(parsed) ? parsed.toString() : '';
+    }
+}
+
+function setTimeInputValue(input, value, fallback) {
+    if (!input) return;
+    input.value = sanitizeTimeValue(value, fallback);
+}
+
+function updateTariffVisibility(scope) {
+    const cfg = pricingSettings && pricingSettings[scope] ? pricingSettings[scope] : defaultTariffConfig(scope);
+    const mode = cfg.mode && TARIFF_MODES.includes(cfg.mode) ? cfg.mode : defaultTariffConfig(scope).mode;
+    const nodes = document.querySelectorAll(`[data-tariff-scope="${scope}"]`);
+    nodes.forEach((node) => {
+        const modesRaw = node.dataset.tariffMode || '';
+        const modeList = modesRaw.split(',').map((entry) => entry.trim()).filter(Boolean);
+        if (!modeList.length || modeList.includes(mode)) {
+            node.style.display = '';
+        } else {
+            node.style.display = 'none';
+        }
+    });
+}
+
+function updateTariffHint(scope) {
+    const hintEl = scope === 'import' ? importTariffHint : exportTariffHint;
+    if (!hintEl) return;
+    const cfg = pricingSettings && pricingSettings[scope] ? pricingSettings[scope] : defaultTariffConfig(scope);
+    const mode = cfg.mode && TARIFF_MODES.includes(cfg.mode) ? cfg.mode : defaultTariffConfig(scope).mode;
+    const label = scope === 'import' ? 'Import' : 'Export';
+    let text = `${label} price configuration pending.`;
+    if (mode === 'constant') {
+        text = `${label} price stays fixed for every interval.`;
+    } else if (mode === 'spot_plus_constant') {
+        text = `${label} price follows the day-ahead signal adjusted by the offset below.`;
+    } else if (mode === 'dual_rate') {
+        text = `${label} price switches between peak and off-peak windows in local time.`;
+    }
+    hintEl.textContent = text;
+}
+
+function renderPricingForm() {
+    if (!pricingForm) return;
+    ensurePricingSettings();
+    const importDefaults = defaultTariffConfig('import');
+    const exportDefaults = defaultTariffConfig('export');
+    const importConfig = normalizeTariffConfig(pricingSettings.import, 'import');
+    const exportConfig = normalizeTariffConfig(pricingSettings.export, 'export');
+    pricingSettings = {
+        import: importConfig,
+        export: exportConfig,
+    };
+
+    if (importTariffModeSelect) {
+        importTariffModeSelect.value = importConfig.mode;
+    }
+    if (exportTariffModeSelect) {
+        exportTariffModeSelect.value = exportConfig.mode;
+    }
+
+    setNumericInputValue(importConstantInput, importConfig.constant_eur_per_kwh);
+    setNumericInputValue(importSpotOffsetInput, importConfig.spot_offset_eur_per_kwh);
+    setNumericInputValue(importPeakRateInput, importConfig.dual_peak_eur_per_kwh);
+    setNumericInputValue(importOffpeakRateInput, importConfig.dual_offpeak_eur_per_kwh);
+    setTimeInputValue(importPeakStartInput, importConfig.dual_peak_start_local, importDefaults.dual_peak_start_local);
+    setTimeInputValue(importPeakEndInput, importConfig.dual_peak_end_local, importDefaults.dual_peak_end_local);
+
+    setNumericInputValue(exportConstantInput, exportConfig.constant_eur_per_kwh);
+    setNumericInputValue(exportSpotOffsetInput, exportConfig.spot_offset_eur_per_kwh);
+    setNumericInputValue(exportPeakRateInput, exportConfig.dual_peak_eur_per_kwh);
+    setNumericInputValue(exportOffpeakRateInput, exportConfig.dual_offpeak_eur_per_kwh);
+    setTimeInputValue(exportPeakStartInput, exportConfig.dual_peak_start_local, exportDefaults.dual_peak_start_local);
+    setTimeInputValue(exportPeakEndInput, exportConfig.dual_peak_end_local, exportDefaults.dual_peak_end_local);
+
+    updateTariffVisibility('import');
+    updateTariffHint('import');
+    updateTariffVisibility('export');
+    updateTariffHint('export');
+}
+
+function handleTariffModeChange(scope, mode) {
+    ensurePricingSettings();
+    const normalized = TARIFF_MODES.includes(mode) ? mode : defaultTariffConfig(scope).mode;
+    pricingSettings[scope].mode = normalized;
+    renderPricingForm();
+    schedulePricingSave();
+}
+
+function resetPricingToDefaults() {
+    pricingSettings = defaultPricingSettings();
+    renderPricingForm();
+    setPricingMessage('Restored tariff defaults. Saving…');
+    schedulePricingSave();
+}
+
+function handleSavePricingClick() {
+    void savePricingSettings(true);
+}
+
+function schedulePricingSave() {
+    if (!pricingForm) return;
+    if (pricingSaving) {
+        pricingPendingResave = true;
+        return;
+    }
+    if (pricingSaveTimer) {
+        clearTimeout(pricingSaveTimer);
+    }
+    pricingSaveTimer = setTimeout(() => {
+        pricingSaveTimer = null;
+        void savePricingSettings(false);
+    }, PRICING_SAVE_DEBOUNCE_MS);
+}
+
+async function savePricingSettings(manual = false) {
+    ensurePricingSettings();
+    if (pricingSaving) {
+        pricingPendingResave = true;
+        return;
+    }
+    if (pricingSaveTimer) {
+        clearTimeout(pricingSaveTimer);
+        pricingSaveTimer = null;
+    }
+    pricingSaving = true;
+    if (savePricingBtn) {
+        savePricingBtn.setAttribute('disabled', 'disabled');
+    }
+    if (resetPricingBtn) {
+        resetPricingBtn.setAttribute('disabled', 'disabled');
+    }
+    if (manual) {
+        setPricingMessage('Saving pricing…');
+    } else {
+        setPricingMessage('');
+    }
+    try {
+        const payload = normalizePricingSettings(pricingSettings);
+        pricingSettings = payload;
+        const response = await fetchJson('/api/settings/pricing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        applySettingsPayload(response);
+        if (manual) {
+            setPricingMessage('Pricing saved.', 'info', 2500);
+        } else {
+            setPricingMessage('');
+        }
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setPricingMessage(message, 'error');
+    } finally {
+        pricingSaving = false;
+        if (savePricingBtn) {
+            savePricingBtn.removeAttribute('disabled');
+        }
+        if (resetPricingBtn) {
+            resetPricingBtn.removeAttribute('disabled');
+        }
+        if (pricingPendingResave) {
+            pricingPendingResave = false;
+            schedulePricingSave();
+        }
+    }
+}
+
+function bindTariffNumericInput(input, scope, key) {
+    if (!input) return;
+    input.addEventListener('change', (event) => {
+        ensurePricingSettings();
+        const raw = typeof event.target.value === 'string' ? event.target.value.trim() : '';
+        if (!raw) {
+            pricingSettings[scope][key] = null;
+            schedulePricingSave();
+            return;
+        }
+        const parsed = Number.parseFloat(raw);
+        if (Number.isFinite(parsed)) {
+            pricingSettings[scope][key] = parsed;
+        } else {
+            pricingSettings[scope][key] = null;
+            event.target.value = '';
+        }
+        schedulePricingSave();
+    });
+}
+
+function bindTariffTimeInput(input, scope, key) {
+    if (!input) return;
+    input.addEventListener('change', (event) => {
+        ensurePricingSettings();
+        const fallback = defaultTariffConfig(scope)[key];
+        const sanitized = sanitizeTimeValue(event.target.value, fallback);
+        pricingSettings[scope][key] = sanitized;
+        event.target.value = sanitized;
+        schedulePricingSave();
+    });
 }
 
 async function loadSettingsData() {
@@ -861,8 +1233,8 @@ function updateSummary(summary) {
         { key: 'import_kwh', id: 'summary-import', format: (v) => numberFmt1.format(v) },
         { key: 'export_kwh', id: 'summary-export', format: (v) => numberFmt1.format(v) },
         { key: 'net_cost_eur', id: 'summary-net', format: (v) => currencyFmt.format(v) },
-        { key: 'peak_import_kw', id: 'summary-peak-import', format: (v) => numberFmt2.format(v) },
-        { key: 'peak_export_kw', id: 'summary-peak-export', format: (v) => numberFmt2.format(v) },
+    { key: 'pv_energy_kwh', id: 'summary-pv-energy', format: (v) => numberFmt1.format(v) },
+    { key: 'consumption_kwh', id: 'summary-load', format: (v) => numberFmt1.format(v) },
     ];
     if (!summary) {
         mapping.forEach((item) => {
@@ -1019,6 +1391,8 @@ function ensureForecastChart() {
                     backgroundColor: 'rgba(34, 197, 94, 0.12)',
                     fill: true,
                     tension: 0.25,
+                    pointRadius: 0,
+                    pointHitRadius: 6,
                 },
                 {
                     label: 'Load forecast (kW)',
@@ -1027,16 +1401,8 @@ function ensureForecastChart() {
                     backgroundColor: 'rgba(239, 68, 68, 0.08)',
                     fill: false,
                     tension: 0.25,
-                },
-                {
-                    label: 'Price (€/kWh)',
-                    data: [],
-                    borderColor: '#6366f1',
-                    fill: false,
-                    tension: 0.15,
-                    yAxisID: 'y1',
                     pointRadius: 0,
-                    pointHitRadius: 7,
+                    pointHitRadius: 6,
                 },
             ],
         },
@@ -1053,24 +1419,9 @@ function ensureForecastChart() {
                     title: { display: true, text: 'Power (kW)' },
                     beginAtZero: true,
                 },
-                y1: {
-                    position: 'right',
-                    title: { display: true, text: '€/kWh' },
-                    grid: { drawOnChartArea: false },
-                },
             },
             plugins: {
                 legend: { display: true },
-                tooltip: {
-                    callbacks: {
-                        afterLabel(context) {
-                            if (!priceImputedFlags.length) {
-                                return '';
-                            }
-                            return priceImputedFlags[context.dataIndex] ? 'Imputed from previous day' : '';
-                        },
-                    },
-                },
             },
         },
     });
@@ -1080,31 +1431,54 @@ function ensurePlanChart() {
     if (planChart) return;
     const ctx = document.getElementById('planChart');
     planChart = new Chart(ctx, {
+        type: 'line',
         data: {
             labels: [],
             datasets: [
                 {
-                    type: 'bar',
-                    label: 'Grid import (kW)',
+                    id: 'exportPrice',
+                    type: 'line',
+                    label: 'Export price (€/kWh)',
                     data: [],
-                    backgroundColor: 'rgba(37, 99, 235, 0.65)',
-                    stack: 'grid',
+                    borderColor: '#f97316',
+                    tension: 0.18,
+                    fill: false,
+                    yAxisID: 'price',
+                    pointRadius: 0,
+                    pointHitRadius: 8,
+                    spanGaps: true,
+                    borderWidth: 2,
                 },
                 {
-                    type: 'bar',
-                    label: 'Grid export (kW)',
+                    id: 'importPrice',
+                    type: 'line',
+                    label: 'Import price (€/kWh)',
                     data: [],
-                    backgroundColor: 'rgba(249, 115, 22, 0.7)',
-                    stack: 'grid',
+                    borderColor: '#2563eb',
+                    tension: 0.18,
+                    fill: {
+                        target: '-1',
+                        above: 'rgba(37, 99, 235, 0.12)',
+                        below: 'rgba(249, 115, 22, 0.12)',
+                    },
+                    yAxisID: 'price',
+                    pointRadius: 0,
+                    pointHitRadius: 8,
+                    spanGaps: true,
+                    borderWidth: 2,
                 },
                 {
                     type: 'line',
                     label: 'Battery SoC (%)',
                     data: [],
                     borderColor: '#a855f7',
+                    backgroundColor: 'rgba(168, 85, 247, 0.08)',
                     tension: 0.2,
                     fill: false,
                     yAxisID: 'soc',
+                    pointRadius: 0,
+                    pointHitRadius: 6,
+                    spanGaps: true,
                 },
             ],
         },
@@ -1113,47 +1487,63 @@ function ensurePlanChart() {
             responsive: true,
             maintainAspectRatio: false,
             scales: {
-                x: { stacked: true, ticks: { maxRotation: 0, autoSkip: true } },
-                y: {
-                    stacked: true,
-                    title: { display: true, text: 'Grid power (kW)' },
-                },
+                x: { ticks: { maxRotation: 0, autoSkip: true } },
                 soc: {
-                    position: 'right',
+                    position: 'left',
                     min: 0,
                     max: 100,
                     grid: { drawOnChartArea: false },
+                    offset: true,
                     title: { display: true, text: 'State of charge (%)' },
+                },
+                price: {
+                    position: 'right',
+                    grid: { drawOnChartArea: false },
+                    title: { display: true, text: 'Price (€/kWh)' },
+                    offset: true,
+                    ticks: {
+                        callback(value) {
+                            return currencyFmt.format(value);
+                        },
+                    },
                 },
             },
             plugins: {
                 legend: { display: true },
+                tooltip: {
+                    callbacks: {
+                        afterLabel(context) {
+                            if (!priceImputedFlags.length) return '';
+                            const dataset = context.dataset || {};
+                            if (dataset.yAxisID !== 'price') return '';
+                            return priceImputedFlags[context.dataIndex] ? 'Imputed from previous day' : '';
+                        },
+                    },
+                },
             },
         },
     });
 }
 
-function ensureHistoryChart() {
-    if (historyChart) return;
-    const ctx = document.getElementById('historyChart');
-    historyChart = new Chart(ctx, {
-        type: 'line',
+function ensureGridChart() {
+    if (gridChart) return;
+    const ctx = document.getElementById('gridChart');
+    gridChart = new Chart(ctx, {
+        type: 'bar',
         data: {
             labels: [],
             datasets: [
                 {
-                    label: 'Measured load (kW)',
+                    label: 'Grid import (kW)',
                     data: [],
-                    borderColor: '#ef4444',
-                    tension: 0.2,
-                    fill: false,
+                    backgroundColor: 'rgba(37, 99, 235, 0.75)',
+                    borderRadius: 2,
                 },
                 {
-                    label: 'Measured PV (kW)',
+                    label: 'Grid export (kW)',
                     data: [],
-                    borderColor: '#22c55e',
-                    tension: 0.2,
-                    fill: false,
+                    backgroundColor: 'rgba(249, 115, 22, 0.75)',
+                    borderRadius: 2,
                 },
             ],
         },
@@ -1164,12 +1554,33 @@ function ensureHistoryChart() {
             scales: {
                 x: { ticks: { maxRotation: 0, autoSkip: true } },
                 y: {
-                    title: { display: true, text: 'Power (kW)' },
-                    beginAtZero: true,
+                    title: { display: true, text: 'Grid power (kW)' },
+                    ticks: {
+                        callback(value) {
+                            return `${value >= 0 ? '' : '-'}${Math.abs(value)}`;
+                        },
+                    },
+                    grid: {
+                        color(context) {
+                            if (context.tick && context.tick.value === 0) {
+                                return 'rgba(148, 163, 184, 0.6)';
+                            }
+                            return 'rgba(148, 163, 184, 0.18)';
+                        },
+                    },
                 },
             },
             plugins: {
                 legend: { display: true },
+                tooltip: {
+                    callbacks: {
+                        label(context) {
+                            const value = Math.abs(Number(context.parsed.y || 0));
+                            const label = context.dataset && context.dataset.label ? context.dataset.label : '';
+                            return `${label}: ${numberFmt2.format(value)} kW`;
+                        },
+                    },
+                },
             },
         },
     });
@@ -1177,14 +1588,13 @@ function ensureHistoryChart() {
 
 function applyForecast(payload) {
     const series = payload.series || {};
-    const history = payload.history || {};
     const forecastMessage = document.getElementById('forecastMessage');
     updateFormattingContext(payload.locale, payload.timezone);
     document.getElementById('lastUpdated').textContent = formatDateTime(payload.timestamp);
 
     ensureForecastChart();
     ensurePlanChart();
-    ensureHistoryChart();
+    ensureGridChart();
 
     const timestamps = Array.isArray(series.timestamps) ? series.timestamps : [];
     const labels = timestamps.map(formatTickLabel);
@@ -1195,46 +1605,61 @@ function applyForecast(payload) {
     forecastChart.data.datasets[1].data = sanitizeSeries(series.load_kw || zeros);
     const priceImputedRaw = Array.isArray(series.price_imputed) ? series.price_imputed : [];
     priceImputedFlags = labels.map((_, idx) => Boolean(priceImputedRaw[idx]));
-    forecastChart.data.datasets[2].data = sanitizeSeries(series.price_eur_per_kwh || zeros);
-    const segmentImputed = (ctx) => {
-        const leftIdx = typeof ctx.p0DataIndex === 'number' ? ctx.p0DataIndex : 0;
-        const rightIdx = typeof ctx.p1DataIndex === 'number' ? ctx.p1DataIndex : leftIdx;
-        return Boolean(priceImputedFlags[leftIdx] || priceImputedFlags[rightIdx]);
-    };
-    forecastChart.data.datasets[2].segment = {
-        borderColor: () => '#6366f1',
-        borderDash: (ctx) => (segmentImputed(ctx) ? [6, 4] : []),
-    };
-    forecastChart.data.datasets[2].pointRadius = labels.map((_, idx) => (priceImputedFlags[idx] ? 3 : 0));
-    forecastChart.data.datasets[2].pointBackgroundColor = labels.map(() => '#6366f1');
     forecastChart.update();
 
     const importKw = Array.isArray(series.grid_import_kw) ? series.grid_import_kw : zeros;
     const exportKw = Array.isArray(series.grid_export_kw) ? series.grid_export_kw : zeros;
     const socSeries = Array.isArray(series.soc) ? series.soc : zeros;
+    const importPriceRaw = Array.isArray(series.price_import_eur_per_kwh)
+        ? series.price_import_eur_per_kwh
+        : Array.isArray(series.price_eur_per_kwh)
+            ? series.price_eur_per_kwh
+            : zeros;
+    const exportPriceRaw = Array.isArray(series.price_export_eur_per_kwh)
+        ? series.price_export_eur_per_kwh
+        : Array.isArray(series.price_spot_eur_per_kwh)
+            ? series.price_spot_eur_per_kwh
+            : zeros;
 
     const sanitizedImport = sanitizeSeries(importKw);
-    const sanitizedExport = sanitizeSeries(exportKw.map((v) => -Number(v || 0)));
+    const sanitizedExport = sanitizeSeries(exportKw);
     const sanitizedSoc = sanitizeSeries(socSeries, 100);
+    const sanitizedImportPrice = sanitizeSeries(importPriceRaw);
+    const sanitizedExportPrice = sanitizeSeries(exportPriceRaw);
+    const segmentImputed = (ctx) => {
+        if (!ctx) {
+            return false;
+        }
+        const leftIdx = typeof ctx.p0DataIndex === 'number' ? ctx.p0DataIndex : 0;
+        const rightIdx = typeof ctx.p1DataIndex === 'number' ? ctx.p1DataIndex : leftIdx;
+        return Boolean(priceImputedFlags[leftIdx] || priceImputedFlags[rightIdx]);
+    };
 
     planChart.data.labels = labels;
-    planChart.data.datasets[0].data = sanitizedImport;
-    planChart.data.datasets[1].data = sanitizedExport;
+    planChart.data.datasets[0].data = sanitizedExportPrice;
+    planChart.data.datasets[1].data = sanitizedImportPrice;
     planChart.data.datasets[2].data = sanitizedSoc;
+    planChart.data.datasets[0].segment = {
+        borderDash: (ctx) => (segmentImputed(ctx) ? [6, 4] : []),
+    };
+    planChart.data.datasets[1].segment = {
+        borderDash: (ctx) => (segmentImputed(ctx) ? [6, 4] : []),
+    };
+    const imputedRadiusValues = labels.map((_, idx) => (priceImputedFlags[idx] ? 2 : 0));
+    planChart.data.datasets[0].pointRadius = imputedRadiusValues;
+    planChart.data.datasets[1].pointRadius = imputedRadiusValues;
+    planChart.data.datasets[0].pointHoverRadius = imputedRadiusValues;
+    planChart.data.datasets[1].pointHoverRadius = imputedRadiusValues;
+    planChart.data.datasets[0].pointBackgroundColor = labels.map(() => '#f97316');
+    planChart.data.datasets[1].pointBackgroundColor = labels.map(() => '#2563eb');
+    planChart.data.datasets[2].pointRadius = 0;
+    planChart.data.datasets[2].pointBackgroundColor = '#a855f7';
     planChart.update();
 
-    if (Array.isArray(history.timestamps) && history.timestamps.length) {
-        const historyLabels = history.timestamps.map(formatTickLabel);
-        const historyZeros = new Array(historyLabels.length).fill(0);
-        historyChart.data.labels = historyLabels;
-        historyChart.data.datasets[0].data = sanitizeSeries(history.load_kw || historyZeros);
-        historyChart.data.datasets[1].data = sanitizeSeries(history.pv_kw || historyZeros);
-    } else {
-        historyChart.data.labels = [];
-        historyChart.data.datasets[0].data = [];
-        historyChart.data.datasets[1].data = [];
-    }
-    historyChart.update();
+    gridChart.data.labels = labels;
+    gridChart.data.datasets[0].data = sanitizedImport;
+    gridChart.data.datasets[1].data = sanitizedExport;
+    gridChart.update();
 
     updateSummary(payload.summary);
     forecastMessage.textContent = '';
@@ -1377,12 +1802,41 @@ window.addEventListener('DOMContentLoaded', () => {
             renderEntityList(event.target.value);
         });
     }
+    if (importTariffModeSelect) {
+        importTariffModeSelect.addEventListener('change', (event) => {
+            handleTariffModeChange('import', event.target.value);
+        });
+    }
+    if (exportTariffModeSelect) {
+        exportTariffModeSelect.addEventListener('change', (event) => {
+            handleTariffModeChange('export', event.target.value);
+        });
+    }
+    bindTariffNumericInput(importConstantInput, 'import', 'constant_eur_per_kwh');
+    bindTariffNumericInput(importSpotOffsetInput, 'import', 'spot_offset_eur_per_kwh');
+    bindTariffNumericInput(importPeakRateInput, 'import', 'dual_peak_eur_per_kwh');
+    bindTariffNumericInput(importOffpeakRateInput, 'import', 'dual_offpeak_eur_per_kwh');
+    bindTariffTimeInput(importPeakStartInput, 'import', 'dual_peak_start_local');
+    bindTariffTimeInput(importPeakEndInput, 'import', 'dual_peak_end_local');
+    bindTariffNumericInput(exportConstantInput, 'export', 'constant_eur_per_kwh');
+    bindTariffNumericInput(exportSpotOffsetInput, 'export', 'spot_offset_eur_per_kwh');
+    bindTariffNumericInput(exportPeakRateInput, 'export', 'dual_peak_eur_per_kwh');
+    bindTariffNumericInput(exportOffpeakRateInput, 'export', 'dual_offpeak_eur_per_kwh');
+    bindTariffTimeInput(exportPeakStartInput, 'export', 'dual_peak_start_local');
+    bindTariffTimeInput(exportPeakEndInput, 'export', 'dual_peak_end_local');
+    if (savePricingBtn) {
+        savePricingBtn.addEventListener('click', handleSavePricingClick);
+    }
+    if (resetPricingBtn) {
+        resetPricingBtn.addEventListener('click', resetPricingToDefaults);
+    }
     window.addEventListener('keydown', (event) => {
         if (event.key === 'Escape' && entityModal && entityModal.classList.contains('open')) {
             closeEntityModal();
         }
     });
 
+    renderPricingForm();
     refreshStatus();
     refreshForecast();
     loadSettingsData();

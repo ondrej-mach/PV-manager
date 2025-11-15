@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import copy
 import logging
 import math
 import threading
@@ -21,7 +22,15 @@ from energy_forecaster.services.baseline_control import BatteryConfig
 from energy_forecaster.services.optimal_control import solve_lp_optimal_control
 from energy_forecaster.services.prediction_service import run_prediction_pipeline
 from energy_forecaster.services.training_service import run_training_pipeline
-from .settings import AppSettings, EntitySelection, load_settings, save_settings
+from .settings import (
+    AppSettings,
+    EntitySelection,
+    PricingSettings,
+    TariffSettings,
+    coerce_pricing_payload,
+    load_settings,
+    save_settings,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,6 +64,8 @@ class ForecastSnapshot:
     pv_forecast: pd.Series
     load_forecast: pd.Series
     price_forecast: pd.Series
+    export_price_forecast: pd.Series
+    spot_price_forecast: pd.Series
     price_imputed: pd.Series
     plan: pd.DataFrame
     ha_recent: pd.DataFrame
@@ -86,6 +97,9 @@ class ForecastSnapshot:
                 "pv_kw": self.pv_forecast.reindex(self.forecast_index, fill_value=0.0).tolist(),
                 "load_kw": self.load_forecast.reindex(self.forecast_index, method="ffill").tolist(),
                 "price_eur_per_kwh": self.price_forecast.reindex(self.forecast_index, method="ffill").tolist(),
+                "price_import_eur_per_kwh": self.price_forecast.reindex(self.forecast_index, method="ffill").tolist(),
+                "price_export_eur_per_kwh": self.export_price_forecast.reindex(self.forecast_index, method="ffill").tolist(),
+                "price_spot_eur_per_kwh": self.spot_price_forecast.reindex(self.forecast_index, method="ffill").tolist(),
                 "price_imputed": self.price_imputed.reindex(self.forecast_index, fill_value=False).astype(bool).tolist(),
                 "grid_import_kw": plan_grid_import.tolist(),
                 "grid_export_kw": plan_grid_export.tolist(),
@@ -258,6 +272,7 @@ class AppContext:
 
         initial_soc = await self._get_initial_soc()
         wear_cost = max(0.0, float(self._battery_wear_cost))
+        pricing_cfg = await self._get_pricing_config()
         snapshot = await self._call_in_thread(
             self._compute_snapshot,
             self._ha,
@@ -269,6 +284,7 @@ class AppContext:
             scales,
             initial_soc,
             wear_cost,
+            pricing_cfg,
         )
 
         async with self._lock:
@@ -286,6 +302,7 @@ class AppContext:
         scales: Dict[str, float],
         initial_soc: Optional[float],
         wear_cost_eur_per_kwh: float,
+        pricing_cfg: PricingSettings,
     ) -> ForecastSnapshot:
         now = datetime.now(timezone.utc)
         preds = run_prediction_pipeline(
@@ -313,7 +330,11 @@ class AppContext:
         load_series = load_series.clip(lower=0.0)
         pv_series = pv_forecast.clip(lower=0.0)
 
-        price_series, price_imputed = self._build_price_series(tz, pv_series.index)
+        spot_price_series, import_price_series, export_price_series, price_imputed = self._build_price_series(
+            tz,
+            pv_series.index,
+            pricing_cfg,
+        )
 
         dt_hours = self.interval_minutes / 60.0
         S = pd.DataFrame(
@@ -321,7 +342,9 @@ class AppContext:
                 "pv_kw": pv_series.values,
                 "load_kw": load_series.values,
                 "dt_h": np.full(len(pv_series), dt_hours),
-                "price_eur_per_kwh": price_series.reindex(pv_series.index, method="ffill").values,
+                "price_eur_per_kwh": spot_price_series.reindex(pv_series.index, method="ffill").values,
+                "import_price_eur_per_kwh": import_price_series.reindex(pv_series.index, method="ffill").values,
+                "export_price_eur_per_kwh": export_price_series.reindex(pv_series.index, method="ffill").values,
             },
             index=pv_series.index,
         )
@@ -336,7 +359,7 @@ class AppContext:
         plan.index = pv_series.index
 
         summary = self._summarize_plan(plan)
-        intervention = self._determine_intervention(plan, price_series, tz)
+        intervention = self._determine_intervention(plan, import_price_series, tz)
 
         ha_recent = preds.get("ha_recent", pd.DataFrame(index=pd.Index([], name="time")))
         if not ha_recent.empty:
@@ -349,7 +372,9 @@ class AppContext:
             forecast_index=pv_series.index,
             pv_forecast=pv_series,
             load_forecast=load_series,
-            price_forecast=price_series,
+            price_forecast=import_price_series,
+            export_price_forecast=export_price_series,
+            spot_price_forecast=spot_price_series,
             price_imputed=price_imputed,
             plan=plan,
             ha_recent=ha_recent,
@@ -359,7 +384,12 @@ class AppContext:
             locale=self._locale,
         )
 
-    def _build_price_series(self, tz: str, index: pd.DatetimeIndex) -> tuple[pd.Series, pd.Series]:
+    def _build_price_series(
+        self,
+        tz: str,
+        index: pd.DatetimeIndex,
+        pricing_cfg: Optional[PricingSettings],
+    ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
         start_local = index[0].tz_convert(tz) if index.tz is not None else index[0].tz_localize("UTC").tz_convert(tz)
         end_local = index[-1].tz_convert(tz) if index.tz is not None else index[-1].tz_localize("UTC").tz_convert(tz)
         start = start_local - timedelta(days=2)
@@ -383,7 +413,71 @@ class AppContext:
         if still_missing.any():
             aligned = aligned.ffill().bfill()
             imputed_mask = imputed_mask | still_missing
-        return aligned, imputed_mask
+        import_cfg = pricing_cfg.import_tariff if pricing_cfg else None
+        export_cfg = pricing_cfg.export_tariff if pricing_cfg else None
+        import_series = self._apply_tariff_series(aligned, index, tz, import_cfg, "import")
+        export_series = self._apply_tariff_series(aligned, index, tz, export_cfg, "export")
+        return aligned, import_series, export_series, imputed_mask
+
+    def _apply_tariff_series(
+        self,
+        base_series: pd.Series,
+        index: pd.DatetimeIndex,
+        tz: str,
+        tariff: Optional[TariffSettings],
+        scope: str,
+    ) -> pd.Series:
+        series = base_series.reindex(index, method="ffill")
+        cfg = tariff or (PricingSettings().import_tariff if scope == "import" else PricingSettings().export_tariff)
+        mode = cfg.mode if cfg.mode in {"constant", "spot_plus_constant", "dual_rate"} else "spot_plus_constant"
+        if mode == "constant" and cfg.constant_eur_per_kwh is not None:
+            return pd.Series(float(cfg.constant_eur_per_kwh), index=index)
+        if mode == "spot_plus_constant":
+            offset = float(cfg.spot_offset_eur_per_kwh)
+            return series.add(offset, fill_value=0.0)
+        if mode == "dual_rate":
+            peak_val = cfg.dual_peak_eur_per_kwh
+            offpeak_val = cfg.dual_offpeak_eur_per_kwh
+            if peak_val is None or offpeak_val is None:
+                if cfg.constant_eur_per_kwh is not None:
+                    return pd.Series(float(cfg.constant_eur_per_kwh), index=index)
+                return series.copy()
+            mask = self._build_dual_rate_mask(index, tz, cfg.dual_peak_start_local, cfg.dual_peak_end_local)
+            values = pd.Series(float(offpeak_val), index=index)
+            values[mask] = float(peak_val)
+            return values
+        if cfg.constant_eur_per_kwh is not None:
+            return pd.Series(float(cfg.constant_eur_per_kwh), index=index)
+        return series.copy()
+
+    def _build_dual_rate_mask(
+        self,
+        index: pd.DatetimeIndex,
+        tz: str,
+        start_literal: str,
+        end_literal: str,
+    ) -> pd.Series:
+        try:
+            start_hour = int(start_literal[:2])
+            start_min = int(start_literal[3:5])
+            end_hour = int(end_literal[:2])
+            end_min = int(end_literal[3:5])
+        except (ValueError, TypeError):
+            start_hour = 7
+            start_min = 0
+            end_hour = 21
+            end_min = 0
+        local_index = index.tz_convert(tz) if index.tz is not None else index.tz_localize("UTC").tz_convert(tz)
+        local_minutes = local_index.hour * 60 + local_index.minute
+        start_minutes = start_hour * 60 + start_min
+        end_minutes = end_hour * 60 + end_min
+        if start_minutes == end_minutes:
+            mask = pd.Series(True, index=index)
+        elif start_minutes < end_minutes:
+            mask = pd.Series((local_minutes >= start_minutes) & (local_minutes < end_minutes), index=index)
+        else:
+            mask = pd.Series((local_minutes >= start_minutes) | (local_minutes < end_minutes), index=index)
+        return mask
 
     def _determine_intervention(self, plan: pd.DataFrame, price_series: pd.Series, tz: str) -> dict[str, Any]:
         if plan.empty:
@@ -627,6 +721,32 @@ class AppContext:
             "entities": list(self._entity_catalog),
         }
 
+    async def update_pricing_settings(self, data: Dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValueError("Payload must be an object")
+
+        changed = False
+        async with self._settings_lock:
+            current_pricing = self._settings.pricing
+            new_pricing = coerce_pricing_payload(data, current_pricing)
+            if current_pricing != new_pricing:
+                self._settings.pricing = new_pricing
+                changed = True
+            if changed:
+                save_settings(self._settings)
+            serialized = self._serialize_settings(self._settings)
+
+        if not self._stat_catalog:
+            await self.refresh_statistics_catalog()
+        if not self._entity_catalog:
+            await self.refresh_entity_catalog()
+        serialized = await self._attach_recorder_status(serialized)
+        return {
+            "settings": serialized,
+            "statistics": list(self._stat_catalog),
+            "entities": list(self._entity_catalog),
+        }
+
     async def refresh_statistics_catalog(self) -> List[Dict[str, Any]]:
         try:
             await self._ensure_home_assistant()
@@ -794,6 +914,10 @@ class AppContext:
             scales = dict(inverter.scales())
         return stat_ids, rename_map, scales
 
+    async def _get_pricing_config(self) -> PricingSettings:
+        async with self._settings_lock:
+            return copy.deepcopy(self._settings.pricing)
+
     def _serialize_settings(self, settings: AppSettings) -> dict[str, Any]:
         inverter = settings.inverter
         battery = settings.battery
@@ -808,6 +932,7 @@ class AppContext:
         else:
             battery_block = {"soc_sensor": None}
         battery_block["wear_cost_eur_per_kwh"] = float(battery.wear_cost_eur_per_kwh)
+        pricing = settings.pricing
         return {
             "inverter": {
                 "house_consumption": {
@@ -823,6 +948,7 @@ class AppContext:
                 "export_power_limited": bool(inverter.export_power_limited),
             },
             "battery": battery_block,
+            "pricing": pricing.to_dict() if pricing else PricingSettings().to_dict(),
         }
 
     async def _get_initial_soc(self) -> Optional[float]:
@@ -892,12 +1018,20 @@ class AppContext:
         net_cost = float((plan.get("cost_import_eur", pd.Series(dtype=float)) - plan.get("rev_export_eur", pd.Series(dtype=float))).sum())
         peak_import = float(plan.get("grid_import_kw", pd.Series(dtype=float)).max()) if not plan.empty else 0.0
         peak_export = float(plan.get("grid_export_kw", pd.Series(dtype=float)).max()) if not plan.empty else 0.0
+        pv_energy = float(
+            plan.get("pv_kw", pd.Series(dtype=float)).mul(plan.get("dt_h", pd.Series(dtype=float)), fill_value=0).sum()
+        )
+        consumption = float(
+            plan.get("load_kw", pd.Series(dtype=float)).mul(plan.get("dt_h", pd.Series(dtype=float)), fill_value=0).sum()
+        )
         return {
             "import_kwh": import_kwh,
             "export_kwh": export_kwh,
             "net_cost_eur": net_cost,
             "peak_import_kw": peak_import,
             "peak_export_kw": peak_export,
+            "pv_energy_kwh": pv_energy,
+            "consumption_kwh": consumption,
         }
 
     async def get_snapshot(self) -> Optional[ForecastSnapshot]:

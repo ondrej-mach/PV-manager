@@ -39,12 +39,12 @@
                     <span class="summary-value" id="summary-net">--</span>
                 </div>
                 <div class="summary-item">
-                    <span class="summary-label">Peak Import (kW)</span>
-                    <span class="summary-value" id="summary-peak-import">--</span>
+                    <span class="summary-label">Predicted PV energy (kWh)</span>
+                    <span class="summary-value" id="summary-pv-energy">--</span>
                 </div>
                 <div class="summary-item">
-                    <span class="summary-label">Peak Export (kW)</span>
-                    <span class="summary-value" id="summary-peak-export">--</span>
+                    <span class="summary-label">Predicted consumption (kWh)</span>
+                    <span class="summary-value" id="summary-load">--</span>
                 </div>
             </div>
             <div id="summaryWindow" class="meta"></div>
@@ -69,17 +69,21 @@
 
         <section class="card">
             <h2>Optimization Plan</h2>
-            <div class="chart-container chart-plan">
-                <canvas id="planChart" height="320"></canvas>
+            <div class="optimization-charts">
+                <div class="optimization-block">
+                    <h3 class="chart-subtitle">Price &amp; battery state</h3>
+                    <div class="chart-container chart-plan">
+                        <canvas id="planChart" height="320"></canvas>
+                    </div>
+                </div>
+                <div class="optimization-block">
+                    <h3 class="chart-subtitle">Grid exchange</h3>
+                    <div class="chart-container chart-grid">
+                        <canvas id="gridChart" height="320"></canvas>
+                    </div>
+                </div>
             </div>
             <div id="interventionBanner" class="intervention-banner none">Current intervention: Waiting for forecast…</div>
-        </section>
-
-        <section class="card">
-            <h2>Recent Measurements (24h)</h2>
-            <div class="chart-container chart-history">
-                <canvas id="historyChart" height="280"></canvas>
-            </div>
         </section>
         </div>
         <div id="settingsView" class="view hidden">
@@ -152,6 +156,91 @@
                     <div data-settings-panel="prices" class="settings-panel">
                         <h3>Energy Price Settings</h3>
                         <p class="message">Connect to tariff providers or override price profiles for optimization.</p>
+                        <form id="pricingForm" class="settings-form" autocomplete="off">
+                            <fieldset class="tariff-group">
+                                <legend>Grid import</legend>
+                                <div class="field">
+                                    <label for="importTariffMode">Mode</label>
+                                    <select id="importTariffMode" aria-describedby="importTariffHint">
+                                        <option value="constant">Constant price</option>
+                                        <option value="spot_plus_constant">Spot + constant adder</option>
+                                        <option value="dual_rate">Dual-rate schedule</option>
+                                    </select>
+                                    <p class="hint" id="importTariffHint">Apply a single fixed rate to every interval.</p>
+                                </div>
+                                <div class="field" id="importConstantField" data-tariff-scope="import" data-tariff-mode="constant" style="display:none;">
+                                    <label for="importConstantPrice">Import price (€/kWh)</label>
+                                    <input type="number" id="importConstantPrice" min="0" step="0.001" inputmode="decimal" />
+                                    <p class="hint">Used for every interval when constant pricing is selected.</p>
+                                </div>
+                                <div class="field" id="importSpotOffsetField" data-tariff-scope="import" data-tariff-mode="spot_plus_constant" style="display:none;">
+                                    <label for="importSpotOffset">Offset from spot price (€/kWh)</label>
+                                    <input type="number" id="importSpotOffset" step="0.001" inputmode="decimal" />
+                                    <p class="hint">Positive values raise import prices; negative values lower them relative to the spot signal.</p>
+                                </div>
+                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate" style="display:none;">
+                                    <label for="importPeakRate">Peak price (€/kWh)</label>
+                                    <input type="number" id="importPeakRate" min="0" step="0.001" inputmode="decimal" />
+                                </div>
+                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate" style="display:none;">
+                                    <label for="importOffpeakRate">Off-peak price (€/kWh)</label>
+                                    <input type="number" id="importOffpeakRate" min="0" step="0.001" inputmode="decimal" />
+                                </div>
+                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate" style="display:none;">
+                                    <label for="importPeakStart">Peak start (local time)</label>
+                                    <input type="text" id="importPeakStart" inputmode="numeric" pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="07:00" />
+                                </div>
+                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate" style="display:none;">
+                                    <label for="importPeakEnd">Peak end (local time)</label>
+                                    <input type="text" id="importPeakEnd" inputmode="numeric" pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
+                                    <p class="hint">Intervals between start and end use the peak rate; others use the off-peak rate.</p>
+                                </div>
+                            </fieldset>
+                            <fieldset class="tariff-group">
+                                <legend>Grid export</legend>
+                                <div class="field">
+                                    <label for="exportTariffMode">Mode</label>
+                                    <select id="exportTariffMode" aria-describedby="exportTariffHint">
+                                        <option value="constant">Constant price</option>
+                                        <option value="spot_plus_constant">Spot + constant adder</option>
+                                        <option value="dual_rate">Dual-rate schedule</option>
+                                    </select>
+                                    <p class="hint" id="exportTariffHint">Apply a single fixed rate to every interval.</p>
+                                </div>
+                                <div class="field" id="exportConstantField" data-tariff-scope="export" data-tariff-mode="constant" style="display:none;">
+                                    <label for="exportConstantPrice">Export price (€/kWh)</label>
+                                    <input type="number" id="exportConstantPrice" min="0" step="0.001" inputmode="decimal" />
+                                    <p class="hint">Used for every interval when constant pricing is selected.</p>
+                                </div>
+                                <div class="field" id="exportSpotOffsetField" data-tariff-scope="export" data-tariff-mode="spot_plus_constant" style="display:none;">
+                                    <label for="exportSpotOffset">Offset from spot price (€/kWh)</label>
+                                    <input type="number" id="exportSpotOffset" step="0.001" inputmode="decimal" />
+                                    <p class="hint">Positive values raise export revenue; negative values lower it relative to the spot tariff.</p>
+                                </div>
+                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate" style="display:none;">
+                                    <label for="exportPeakRate">Peak price (€/kWh)</label>
+                                    <input type="number" id="exportPeakRate" min="0" step="0.001" inputmode="decimal" />
+                                </div>
+                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate" style="display:none;">
+                                    <label for="exportOffpeakRate">Off-peak price (€/kWh)</label>
+                                    <input type="number" id="exportOffpeakRate" min="0" step="0.001" inputmode="decimal" />
+                                </div>
+                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate" style="display:none;">
+                                    <label for="exportPeakStart">Peak start (local time)</label>
+                                    <input type="text" id="exportPeakStart" inputmode="numeric" pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="07:00" />
+                                </div>
+                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate" style="display:none;">
+                                    <label for="exportPeakEnd">Peak end (local time)</label>
+                                    <input type="text" id="exportPeakEnd" inputmode="numeric" pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
+                                    <p class="hint">Intervals between start and end use the peak rate; others use the off-peak rate.</p>
+                                </div>
+                            </fieldset>
+                            <p class="message" id="pricingMessage" style="display:none;"></p>
+                            <div class="actions">
+                                <button type="button" id="resetPricingBtn" class="secondary">Reset to defaults</button>
+                                <button type="button" id="savePricingBtn">Save pricing</button>
+                            </div>
+                        </form>
                     </div>
                     <div data-settings-panel="loads" class="settings-panel">
                         <h3>Flexible Loads</h3>

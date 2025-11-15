@@ -48,7 +48,26 @@ def solve_lp_optimal_control(
     for c in ("pv_kw", "load_kw"):
         S.loc[:, c] = pd.to_numeric(S[c], errors="coerce").fillna(0.0).clip(lower=0.0)
     S.loc[:, "dt_h"] = pd.to_numeric(S["dt_h"], errors="coerce").fillna(0.0).clip(lower=0.0)
-    S.loc[:, "price_eur_per_kwh"] = pd.to_numeric(S["price_eur_per_kwh"], errors="coerce").ffill().bfill()
+
+    base_price_series = None
+    if "price_eur_per_kwh" in S.columns:
+        base_price_series = pd.to_numeric(S["price_eur_per_kwh"], errors="coerce").ffill().bfill()
+    import_price_series = None
+    if "import_price_eur_per_kwh" in S.columns:
+        import_price_series = pd.to_numeric(S["import_price_eur_per_kwh"], errors="coerce").ffill().bfill()
+    if import_price_series is None:
+        if base_price_series is None:
+            base_price_series = pd.Series(0.0, index=S.index)
+        import_price_series = base_price_series + 0.14
+    export_price_series = None
+    if "export_price_eur_per_kwh" in S.columns:
+        export_price_series = pd.to_numeric(S["export_price_eur_per_kwh"], errors="coerce").ffill().bfill()
+    if export_price_series is None:
+        if base_price_series is None:
+            base_price_series = pd.Series(0.0, index=S.index)
+        export_price_series = base_price_series.copy()
+    if base_price_series is None:
+        base_price_series = (import_price_series + export_price_series) / 2.0
 
     cap_kwh, soc_min, soc_max = cfg.cap_kwh, cfg.soc_min, cfg.soc_max
     p_batt_max = cfg.p_max_kw
@@ -98,7 +117,9 @@ def solve_lp_optimal_control(
     pv = S["pv_kw"].to_numpy(float)
     load = S["load_kw"].to_numpy(float)
     dt = S["dt_h"].to_numpy(float)
-    prices = S["price_eur_per_kwh"].to_numpy(float)
+    prices_import = import_price_series.to_numpy(float)
+    prices_export = export_price_series.to_numpy(float)
+    prices_base = base_price_series.to_numpy(float)
     N = len(S)
 
     # decision variables
@@ -151,8 +172,8 @@ def solve_lp_optimal_control(
         if reserve_shortfall is not None:
             cons += [reserve_shortfall[t] >= cap_kwh * soft_soc_target - e[t + 1]]
 
-    BUY = cp.Constant(prices + 0.14)  # add fixed components to import price if needed
-    SELL = cp.Constant(prices)
+    BUY = cp.Constant(prices_import)
+    SELL = cp.Constant(prices_export)
     DT = cp.Constant(dt)
 
     trade_step = cp.multiply(BUY, grid_import) - cp.multiply(SELL, grid_export)
@@ -171,7 +192,7 @@ def solve_lp_optimal_control(
         # Default to average import price unless an explicit penalty is provided
         penalty_weight = reserve_soft_penalty_eur_per_kwh
         if penalty_weight is None:
-            avg_buy_price = float(np.mean(prices + 0.14)) if len(prices) else 0.0
+            avg_buy_price = float(np.mean(prices_import)) if len(prices_import) else 0.0
             penalty_weight = max(avg_buy_price, 0.0)
         else:
             penalty_weight = max(penalty_weight, 0.0)
@@ -203,8 +224,9 @@ def solve_lp_optimal_control(
         "batt_to_grid_kw": batt_to_grid.value,
         "grid_import_kw": grid_import.value,
         "grid_export_kw": grid_export.value,
-        "buy_price_eur_per_kwh": BUY.value,
-        "sell_price_eur_per_kwh": SELL.value,
+        "buy_price_eur_per_kwh": prices_import,
+        "sell_price_eur_per_kwh": prices_export,
+        "spot_price_eur_per_kwh": prices_base,
     })
     opt.loc[:, "soc"] = (np.array(e.value[1:]) / cap_kwh).clip(0, 1)
     opt.loc[:, "import_kwh"] = opt["grid_import_kw"] * opt["dt_h"]
