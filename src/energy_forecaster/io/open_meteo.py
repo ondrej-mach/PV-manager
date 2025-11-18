@@ -86,7 +86,7 @@ def fetch_openmeteo_forecast(
     
     if use_mock:
         # Generate mock forecast data for testing
-        now = pd.Timestamp.utcnow().tz_convert("UTC").ceil("h")
+        now = pd.Timestamp.utcnow().tz_localize("UTC").ceil("h")
         timestamps = pd.date_range(start=now, periods=hours, freq="h")
         
         # Realistic-ish values
@@ -112,39 +112,45 @@ def fetch_openmeteo_forecast(
             "direct_normal_irradiance": 250 + 180 * np.clip(np.sin(np.arange(hours) * 2 * np.pi / 24), 0, None),
         }
         return pd.DataFrame(data).set_index("timestamp")
-    
-    import requests
-    
-    url = "https://api.open-meteo.com/v1/forecast"
 
-    # Request enough days to cover the requested hours
+    cache_sess = requests_cache.CachedSession(".cache", expire_after=3600)
+    session = retry(cache_sess, retries=4, backoff_factor=0.2)
+    client = openmeteo_requests.Client(session=session)
+
+    url = "https://api.open-meteo.com/v1/forecast"
     forecast_days = max(1, (hours + 23) // 24)
     params = {
         "latitude": lat,
         "longitude": lon,
-        "hourly": ",".join(hourly_vars),
+        "hourly": hourly_vars,
         "forecast_days": forecast_days,
-        "timezone": "UTC",  # Always work in UTC
+        "timezone": "UTC",
     }
 
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
-    data = response.json()
-    
-    hourly = data["hourly"]
-    timestamps = pd.to_datetime(hourly["time"], utc=True)
-    
-    df_data = {"timestamp": timestamps}
-    for var in hourly_vars:
-        df_data[var] = hourly[var]
-    
-    wx = pd.DataFrame(df_data).set_index("timestamp").sort_index()
+    responses = client.weather_api(url, params=params)
+    resp = responses[0]
+    hourly = resp.Hourly()
+
+    idx = pd.date_range(
+        start=pd.to_datetime(hourly.Time(), unit="s", utc=True),
+        end=pd.to_datetime(hourly.TimeEnd(), unit="s", utc=True),
+        freq=pd.Timedelta(seconds=hourly.Interval()),
+        inclusive="left",
+    )
+
+    data = {"timestamp": idx}
+    for i, name in enumerate(hourly_vars):
+        values = hourly.Variables(i).ValuesAsNumpy()
+        if values is None:
+            values = np.full(len(idx), np.nan)
+        data[name] = values
+
+    wx = pd.DataFrame(data).set_index("timestamp").sort_index()
     for var in hourly_vars:
         if var not in wx.columns:
             wx[var] = 0.0
     wx = wx.astype(float).fillna(0.0)
-    
-    # Return only future data up to requested hours
-    now = pd.Timestamp.now(tz="UTC")
+
+    now = pd.Timestamp.utcnow()
     wx_future = wx[wx.index >= now].iloc[:hours]
     return wx_future

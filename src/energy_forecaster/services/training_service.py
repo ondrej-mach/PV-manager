@@ -13,6 +13,28 @@ from energy_forecaster.io.home_assistant import HomeAssistant
 from energy_forecaster.io.open_meteo import fetch_openmeteo_archive
 from energy_forecaster.features.data_prep import assemble_training_frames, TARGET_COL, PV_COL
 
+
+def _set_feature_metadata(model, columns):
+    cols = list(columns)
+    count = len(cols)
+    targets = []
+    if hasattr(model, "steps") and model.steps:
+        # Try the final estimator inside a Pipeline (e.g. ElasticNet)
+        targets.append(model.steps[-1][1])
+    targets.append(model)
+
+    for target in targets:
+        try:
+            setattr(target, "feature_names_in_", cols)
+            setattr(target, "n_features_in_", count)
+            return
+        except AttributeError:
+            continue
+
+    # Fall back to private attributes so downstream code can still read the metadata
+    setattr(model, "_feature_names_in_", cols)
+    setattr(model, "_n_features_in_", count)
+
 def default_house_model():
     return Pipeline([
         ("scaler", StandardScaler()),
@@ -75,22 +97,26 @@ def run_training_pipeline(
     pv_model    = pv_model or default_pv_model()
 
     # Fit house model
-    Xh = df_house.drop(columns=[TARGET_COL]).values
+    house_feature_cols = list(df_house.drop(columns=[TARGET_COL]).columns)
+    Xh = df_house[house_feature_cols].values
     yh = df_house[TARGET_COL].values
     print(f"[TRAIN] Training house consumption model on {len(yh)} samples and {Xh.shape[1]} features...")
     t0 = time.perf_counter()
     house_model.fit(Xh, yh)
     t1 = time.perf_counter()
     print(f"[TRAIN] House model trained in {t1-t0:.1f}s")
+    _set_feature_metadata(house_model, house_feature_cols)
 
     # Fit pv model
-    Xp = df_pv.drop(columns=[PV_COL]).values
+    pv_feature_cols = list(df_pv.drop(columns=[PV_COL]).columns)
+    Xp = df_pv[pv_feature_cols].values
     yp = df_pv[PV_COL].values
     print(f"[TRAIN] Training PV model on {len(yp)} samples and {Xp.shape[1]} features...")
     t0 = time.perf_counter()
     pv_model.fit(Xp, yp)
     t1 = time.perf_counter()
     print(f"[TRAIN] PV model trained in {t1-t0:.1f}s")
+    _set_feature_metadata(pv_model, pv_feature_cols)
 
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
@@ -103,8 +129,8 @@ def run_training_pipeline(
     return {
         "house_model": house_model,
         "pv_model": pv_model,
-        "house_features": list(df_house.drop(columns=[TARGET_COL]).columns),
-        "pv_features": list(df_pv.drop(columns=[PV_COL]).columns),
+    "house_features": house_feature_cols,
+    "pv_features": pv_feature_cols,
         "window": (start, end),
         "house_samples": len(yh),
         "pv_samples": len(yp),

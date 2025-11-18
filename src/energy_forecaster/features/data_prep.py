@@ -136,6 +136,14 @@ def assemble_training_frames(
 ) -> Dict[str, pd.DataFrame]:
     rename = rename_map or DEFAULT_RENAME_MAP
     ha = normalize_ha(ha_raw, rename=rename, scales=scales or DEFAULT_SCALES)
+    missing_required = [col for col in (TARGET_COL, PV_COL) if col not in ha.columns]
+    if missing_required:
+        available = list(ha.columns)
+        raise RuntimeError(
+            "Home Assistant statistics are missing required column(s) "
+            f"{missing_required}. Available columns after renaming: {available}. "
+            f"Rename map in effect: {rename}."
+        )
     wx_aligned = wx.reindex(ha.index).ffill()
     base = pd.concat([ha, wx_aligned], axis=1)
     base = add_hdd_cdd_temp_sq(base)
@@ -183,6 +191,14 @@ def assemble_forecast_features(
     """
     rename = rename_map or DEFAULT_RENAME_MAP
     ha = normalize_ha(ha_recent, rename=rename, scales=scales or DEFAULT_SCALES)
+    missing_required = [col for col in (TARGET_COL, PV_COL) if col not in ha.columns]
+    if missing_required:
+        available = list(ha.columns)
+        raise RuntimeError(
+            "Home Assistant history is missing required column(s) "
+            f"{missing_required}. Available columns after renaming: {available}. "
+            f"Rename map in effect: {rename}."
+        )
 
     # Resample to match the future timeline frequency if needed
     try:
@@ -224,12 +240,12 @@ def assemble_forecast_features(
         return s.reindex(base_future.index, method='ffill')
 
     # Build PV lag 24h for future index from recent history
-    pv_hist = ha.get(PV_COL)
+    pv_hist = ha[PV_COL] if PV_COL in ha.columns else None
     if isinstance(pv_hist, pd.Series):
         pv_hist = pv_hist.sort_index()
         pv_lag24 = lag_series(pv_hist, 24).fillna(0.0)
     else:
-        pv_lag24 = pd.Series(index=base_future.index, dtype=float)
+        pv_lag24 = pd.Series(0.0, index=base_future.index, dtype=float)
 
     pv_frame = base_future.copy()
     pv_frame["pv_power_lag24"] = pv_lag24
@@ -246,11 +262,11 @@ def assemble_forecast_features(
     pv_X = pv_frame[pv_feats]
 
     # House features need predicted PV for the same timestep and consumption lags
-    cons_hist = ha.get(TARGET_COL)
+    cons_hist = ha[TARGET_COL] if TARGET_COL in ha.columns else None
 
-    lag24 = lag_series(cons_hist, 24) if isinstance(cons_hist, pd.Series) else pd.Series(index=base_future.index, dtype=float)
-    lag48 = lag_series(cons_hist, 48) if isinstance(cons_hist, pd.Series) else pd.Series(index=base_future.index, dtype=float)
-    lag72 = lag_series(cons_hist, 72) if isinstance(cons_hist, pd.Series) else pd.Series(index=base_future.index, dtype=float)
+    lag24 = lag_series(cons_hist, 24) if isinstance(cons_hist, pd.Series) else pd.Series(0.0, index=base_future.index, dtype=float)
+    lag48 = lag_series(cons_hist, 48) if isinstance(cons_hist, pd.Series) else pd.Series(0.0, index=base_future.index, dtype=float)
+    lag72 = lag_series(cons_hist, 72) if isinstance(cons_hist, pd.Series) else pd.Series(0.0, index=base_future.index, dtype=float)
 
     house_frame = base_future.copy()
     # placeholder for PV; caller should fill with predicted PV later

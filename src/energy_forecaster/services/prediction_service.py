@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import os
 import time
 import logging
+from pathlib import Path
 import pandas as pd
 import numpy as np
 from joblib import load
@@ -17,6 +18,62 @@ from energy_forecaster.features.data_prep import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _align_features(model: Any, frame: pd.DataFrame, label: str) -> pd.DataFrame:
+    """Reorder DataFrame columns to match the model's training order.
+
+    Raises if the model expects columns that are missing from the frame.
+    """
+    if not isinstance(frame, pd.DataFrame):
+        raise TypeError(f"Expected DataFrame for {label} features but received {type(frame)}")
+
+    expected = getattr(model, "feature_names_in_", None)
+    if expected is None and hasattr(model, "steps") and model.steps:
+        expected = getattr(model.steps[-1][1], "feature_names_in_", None)
+    if expected is None:
+        expected = getattr(model, "_feature_names_in_", None)
+    if expected is None and hasattr(model, "steps") and model.steps:
+        expected = getattr(model.steps[-1][1], "_feature_names_in_", None)
+    if expected is None:
+        return frame
+
+    expected_list = [str(name) for name in expected]
+    missing = [name for name in expected_list if name not in frame.columns]
+    if missing:
+        raise RuntimeError(
+            f"{label} model expects feature(s) {missing} which are missing from the generated frame."
+        )
+
+    return frame.loc[:, expected_list]
+
+
+def _prepare_debug_path(debug_dir: Optional[str]) -> Optional[Path]:
+    if not debug_dir:
+        return None
+    try:
+        path = Path(debug_dir).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    except Exception as exc:  # pragma: no cover - debug helper
+        _LOGGER.warning("Unable to create debug directory %s: %s", debug_dir, exc)
+        return None
+
+
+def _dump_debug_frame(debug_path: Optional[Path], name: str, frame: Optional[pd.DataFrame]) -> None:
+    if debug_path is None or frame is None:
+        return
+    try:
+        safe_name = name.lower().replace(" ", "_")
+        target = debug_path / f"{safe_name}.csv"
+        if isinstance(frame, pd.Series):
+            frame.to_frame(name=name).to_csv(target)
+        elif isinstance(frame, pd.DataFrame):
+            frame.to_csv(target)
+        else:
+            pd.DataFrame(frame).to_csv(target)
+    except Exception as exc:  # pragma: no cover - debug helper
+        _LOGGER.debug("Failed to dump debug frame %s: %s", name, exc)
 
 
 def load_models(models_dir: str) -> Tuple[object, object]:
@@ -40,18 +97,22 @@ def run_prediction_pipeline(
     rename_map: Optional[Dict[str, str]] = None,
     scales: Optional[Dict[str, float]] = None,
     return_features: bool = False,
+    debug_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run end-to-end prediction using recent HA data and Open-Meteo forecast.
 
     Args:
-        interval_minutes: prediction interval (15 for 15-minute, 60 for hourly)
-        use_mock_weather: use mock weather data instead of API (for testing)
+    interval_minutes: prediction interval (15 for 15-minute, 60 for hourly)
+    use_mock_weather: use mock weather data instead of API (for testing)
+    debug_dir: optional directory path to dump intermediate DataFrames as CSVs
 
     Returns dict with keys:
       - pv_pred: DataFrame with column PV_COL of predictions
       - house_pred: DataFrame with column TARGET_COL of predictions
       - ha_recent: normalized recent HA data (KW columns) for plotting
     """
+    debug_path = _prepare_debug_path(debug_dir)
+
     # Fetch recent HA data for lags at 5-min resolution if available
     ENTITIES = entities or [("sensor.house_consumption", "mean"), ("sensor.pv_power", "mean")]
 
@@ -59,13 +120,22 @@ def run_prediction_pipeline(
     timings: Dict[str, float] = {}
 
     t0 = time.perf_counter()
-    ha_recent_raw = ha.fetch_last_hours_sync(ENTITIES, hours=max(72, horizon_hours + 72), period="5minute")
+    history_hours = max(72, horizon_hours + 72)
+    ha_recent_raw = ha.fetch_history_hours_sync(ENTITIES, hours=history_hours, period="5minute")
+    if ha_recent_raw.empty or not list(ha_recent_raw.columns):
+        _LOGGER.warning(
+            "Home Assistant history returned no data for %s; falling back to hourly statistics.",
+            [entity for entity, _stat in ENTITIES],
+        )
+        ha_recent_raw = ha.fetch_last_hours_sync(ENTITIES, hours=history_hours, period="hour")
     timings["ha_fetch"] = time.perf_counter() - t0
+    _dump_debug_frame(debug_path, "ha_recent_raw", ha_recent_raw)
 
     # Weather forecast (hourly) for the horizon
     t0 = time.perf_counter()
     wx_forecast = fetch_openmeteo_forecast(lat=lat, lon=lon, tz=tz, hours=horizon_hours, use_mock=use_mock_weather)
     timings["wx_fetch"] = time.perf_counter() - t0
+    _dump_debug_frame(debug_path, "weather_forecast_hourly", wx_forecast)
 
     # Upsample weather to match requested interval
     if interval_minutes < 60:
@@ -82,6 +152,8 @@ def run_prediction_pipeline(
         wx_upsampled = wx_forecast
         future_index = wx_forecast.index
 
+    _dump_debug_frame(debug_path, "weather_forecast_resampled", wx_upsampled)
+
     # Build features
     t0 = time.perf_counter()
     feats = assemble_forecast_features(
@@ -95,6 +167,9 @@ def run_prediction_pipeline(
     pv_X = feats["pv_X"]
     house_X_template = feats["house_X"]
     ha_norm = feats["ha_norm"]
+    _dump_debug_frame(debug_path, "ha_normalized", ha_norm)
+    _dump_debug_frame(debug_path, "pv_features", pv_X)
+    _dump_debug_frame(debug_path, "house_features_template", house_X_template)
 
     # Load models
     house_model, pv_model = load_models(models_dir)
@@ -108,10 +183,12 @@ def run_prediction_pipeline(
             "Retrain models to pick up the latest weather inputs."
         )
 
-    pv_pred_values = pv_model.predict(pv_X.values)
+    pv_X_aligned = _align_features(pv_model, pv_X, "PV")
+    pv_pred_values = pv_model.predict(pv_X_aligned.values)
     timings["pv_predict"] = time.perf_counter() - t0
     pv_pred = pd.DataFrame({PV_COL: pv_pred_values}, index=pv_X.index)
     pv_pred[PV_COL] = pv_pred[PV_COL].clip(lower=0.0)
+    _dump_debug_frame(debug_path, "pv_predictions", pv_pred)
 
     # Enforce zero generation when the irradiance forecast says there is no daylight.
     daylight_mask = None
@@ -125,16 +202,19 @@ def run_prediction_pipeline(
     # Fill PV into house features
     house_X = house_X_template.copy()
     house_X[PV_COL] = pv_pred[PV_COL]
+    _dump_debug_frame(debug_path, "house_features_with_pv", house_X)
 
     # Restrict to rows where lags are available
     house_X_clean = house_X.dropna()
-    expected_house_features = getattr(house_model, "n_features_in_", house_X_clean.shape[1])
-    if house_X_clean.shape[1] != expected_house_features:
+    house_X_aligned = _align_features(house_model, house_X_clean, "House consumption")
+    _dump_debug_frame(debug_path, "house_features_clean", house_X_clean)
+    expected_house_features = getattr(house_model, "n_features_in_", house_X_aligned.shape[1])
+    if house_X_aligned.shape[1] != expected_house_features:
         raise RuntimeError(
-            f"House model expects {expected_house_features} features but received {house_X_clean.shape[1]}. "
+            f"House model expects {expected_house_features} features but received {house_X_aligned.shape[1]}. "
             "Retrain models to stay in sync with feature engineering."
         )
-    house_pred_idx = house_X_clean.index
+    house_pred_idx = house_X_aligned.index
     if len(house_pred_idx) == 0:
         _LOGGER.info(
             "Prediction pipeline timings: HA %.2fs | weather %.2fs | features %.2fs | pv %.2fs | house (skipped); rows: ha=%d weather=%d",
@@ -152,10 +232,11 @@ def run_prediction_pipeline(
         }
 
     t0 = time.perf_counter()
-    house_pred_values = house_model.predict(house_X_clean.values)
+    house_pred_values = house_model.predict(house_X_aligned.values)
     timings["house_predict"] = time.perf_counter() - t0
     house_pred = pd.DataFrame({TARGET_COL: house_pred_values}, index=house_pred_idx)
     house_pred[TARGET_COL] = house_pred[TARGET_COL].clip(lower=0.0)
+    _dump_debug_frame(debug_path, "house_predictions", house_pred)
 
     _LOGGER.info(
         "Prediction pipeline timings: HA %.2fs | weather %.2fs | features %.2fs | pv %.2fs | house %.2fs; rows: ha=%d weather=%d preds=%d",

@@ -6,6 +6,7 @@ import contextvars
 import copy
 import logging
 import math
+import os
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -158,6 +159,8 @@ class AppContext:
         self._ha_error: Optional[str] = None
         self._stat_catalog: list[dict[str, Any]] = []
         self._entity_catalog: list[dict[str, Any]] = []
+        debug_dir_env = os.getenv("PREDICTION_DEBUG_DIR")
+        self._debug_dir = Path(debug_dir_env).expanduser() if debug_dir_env else None
 
     async def _call_in_thread(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         loop = asyncio.get_running_loop()
@@ -317,6 +320,7 @@ class AppContext:
             entities=stat_ids,
             rename_map=rename_map,
             scales=scales,
+            debug_dir=self._debug_dir,
         )
 
         pv_forecast = preds["pv_pred"][PV_COL].astype(float)

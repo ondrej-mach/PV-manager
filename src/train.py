@@ -4,13 +4,17 @@ import asyncio
 from datetime import datetime, timezone
 import pandas as pd
 
-# Add the src directory to Python path
+# Add the src directory (and repo root) to Python path
 src_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if src_path not in sys.path:
     sys.path.append(src_path)
+repo_root = os.path.dirname(src_path)
+if repo_root not in sys.path:
+    sys.path.append(repo_root)
 
 from energy_forecaster.services.training_service import run_training_pipeline
 from energy_forecaster.io.home_assistant import HomeAssistant
+from app.pv_manager.settings import load_settings
 
 # Configuration
 LOOKBACK_DAYS = 730  # 2 years of historical data
@@ -21,11 +25,21 @@ FALLBACK_LAT = 49.6
 FALLBACK_LON = 15.6
 FALLBACK_TZ = "Europe/Prague"
 
-# Home Assistant entities to monitor
-ENTITIES = [
-    ("sensor.house_consumption", "mean"),  # House power consumption
-    ("sensor.pv_power", "mean"),          # Solar PV production
+# Home Assistant entities to monitor (fallback when settings.json missing)
+DEFAULT_ENTITIES = [
+    ("sensor.house_consumption", "mean"),
+    ("sensor.pv_power", "mean"),
 ]
+
+
+def _load_inverter_config():
+    try:
+        settings = load_settings()
+    except Exception as exc:
+        print(f"[TRAIN] Warning: failed to load settings.json ({exc}); falling back to defaults.")
+        return None, None, None
+    inverter = settings.inverter
+    return list(inverter.stat_ids()), dict(inverter.rename_map()), dict(inverter.scales())
 
 def main():
     # Set up development environment
@@ -42,6 +56,8 @@ def main():
     
     # Initialize Home Assistant client
     ha = HomeAssistant(token=token, url=url)
+    stat_ids, rename_map, scales = _load_inverter_config()
+    active_entities = stat_ids or DEFAULT_ENTITIES
     
     print("Current environment:")
     print(f"HASS_WS_URL: {ha.url}")
@@ -52,19 +68,22 @@ def main():
     lat, lon, tz = ha.get_location(FALLBACK_LAT, FALLBACK_LON, FALLBACK_TZ)
     print(f"Using coordinates: {lat}, {lon} and timezone: {tz}")
 
-    print(f"\n[TRAIN] Starting training pipeline with target lookback {LOOKBACK_DAYS} days (this may take a while).")
+    print(f"\n[TRAIN] Using HA sensors: {active_entities}")
+    print(f"[TRAIN] Starting training pipeline with target lookback {LOOKBACK_DAYS} days (this may take a while).")
     print("[TRAIN] The actual available HA stats window and counts will be shown by the training pipeline.")
 
     try:
         # Run the training pipeline reusing the existing HomeAssistant instance
         results = run_training_pipeline(
-            stat_ids=ENTITIES,
+            stat_ids=active_entities,
             lookback_days=LOOKBACK_DAYS,
             lat=lat,
             lon=lon,
             tz=tz,
             save_dir=MODELS_DIR,
             ha=ha,
+            rename_map=rename_map,
+            scales=scales,
         )
 
         print("\n[TRAIN] Training completed successfully!")

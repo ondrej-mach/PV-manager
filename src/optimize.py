@@ -12,21 +12,41 @@ import matplotlib.pyplot as plt
 src_path = os.path.dirname(os.path.abspath(__file__))
 if src_path not in sys.path:
     sys.path.append(src_path)
+repo_root = os.path.dirname(src_path)
+if repo_root not in sys.path:
+    sys.path.append(repo_root)
 
 from energy_forecaster.io.home_assistant import HomeAssistant
 from energy_forecaster.services.prediction_service import run_prediction_pipeline
 from energy_forecaster.features.data_prep import PV_COL, TARGET_COL
 from energy_forecaster.io.entsoe import fetch_day_ahead_prices_country, guess_country_code_from_tz
+from app.pv_manager.settings import load_settings
 
 
 MODELS_DIR = os.getenv("MODELS_DIR", "trained_models")
 HORIZON_HOURS = 24
 INTERVAL_MINUTES = 15
 USE_MOCK_WEATHER = os.getenv("USE_MOCK_WEATHER", "0").lower() in ("true", "1", "yes")
+DEBUG_DUMP_DIR = os.getenv("PREDICTION_DEBUG_DIR")
 
 FALLBACK_LAT = 49.6069
 FALLBACK_LON = 15.5808
 FALLBACK_TZ = "Europe/Prague"
+
+DEFAULT_ENTITIES = [
+    ("sensor.house_consumption", "mean"),
+    ("sensor.pv_power", "mean"),
+]
+
+
+def _load_inverter_config():
+    try:
+        settings = load_settings()
+    except Exception as exc:
+        print(f"[OPT] Warning: failed to load settings.json ({exc}); falling back to defaults.")
+        return None, None, None
+    inverter = settings.inverter
+    return list(inverter.stat_ids()), dict(inverter.rename_map()), dict(inverter.scales())
 
 
 def main():
@@ -42,9 +62,12 @@ def main():
         url = None
 
     ha = HomeAssistant(token=token, url=url)
+    stat_ids, rename_map, scales = _load_inverter_config()
+    active_entities = stat_ids or DEFAULT_ENTITIES
 
     try:
         lat, lon, tz = ha.get_location(FALLBACK_LAT, FALLBACK_LON, FALLBACK_TZ)
+        print(f"[OPT] Using HA sensors: {active_entities}")
 
         # Predictions
         results = run_prediction_pipeline(
@@ -56,6 +79,10 @@ def main():
             horizon_hours=HORIZON_HOURS,
             interval_minutes=INTERVAL_MINUTES,
             use_mock_weather=USE_MOCK_WEATHER,
+            entities=active_entities,
+            rename_map=rename_map,
+            scales=scales,
+            debug_dir=DEBUG_DUMP_DIR,
         )
         pv_pred = results["pv_pred"][PV_COL]
         load_pred = results["house_pred"][TARGET_COL]
