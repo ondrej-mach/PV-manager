@@ -39,11 +39,11 @@
                     <span class="summary-value" id="summary-net">--</span>
                 </div>
                 <div class="summary-item">
-                    <span class="summary-label">Predicted PV energy (kWh)</span>
+                    <span class="summary-label">PV energy (kWh)</span>
                     <span class="summary-value" id="summary-pv-energy">--</span>
                 </div>
                 <div class="summary-item">
-                    <span class="summary-label">Predicted consumption (kWh)</span>
+                    <span class="summary-label">Consumption (kWh)</span>
                     <span class="summary-value" id="summary-load">--</span>
                 </div>
             </div>
@@ -125,6 +125,26 @@
                                 <p class="hint" id="batterySocHint">Choose a sensor reporting battery charge in percent (0-100) or fraction (0-1).</p>
                             </div>
                             <div class="field">
+                                <label for="batteryCapacityInput">Usable capacity (kWh)</label>
+                                <input type="number" id="batteryCapacityInput" min="0.1" step="0.1" inputmode="decimal" aria-describedby="batteryCapacityHint" />
+                                <p class="hint" id="batteryCapacityHint">Defines how much energy the optimization can store in the battery.</p>
+                            </div>
+                            <div class="field">
+                                <label for="batteryPowerInput">Charge / discharge limit (kW)</label>
+                                <input type="number" id="batteryPowerInput" min="0.1" step="0.1" inputmode="decimal" aria-describedby="batteryPowerHint" />
+                                <p class="hint" id="batteryPowerHint">Set to the inverter&apos;s continuous charge or discharge power limit.</p>
+                            </div>
+                            <div class="field">
+                                <label for="batterySocMinInput">Reserve floor (% SoC)</label>
+                                <input type="number" id="batterySocMinInput" min="0" max="98" step="1" inputmode="decimal" aria-describedby="batterySocMinHint" />
+                                <p class="hint" id="batterySocMinHint">Keep at least this much charge reserved for resiliency.</p>
+                            </div>
+                            <div class="field">
+                                <label for="batterySocMaxInput">Maximum usable SoC (%)</label>
+                                <input type="number" id="batterySocMaxInput" min="2" max="100" step="1" inputmode="decimal" aria-describedby="batterySocMaxHint" />
+                                <p class="hint" id="batterySocMaxHint">Upper bound on usable charge to limit battery wear.</p>
+                            </div>
+                            <div class="field">
                                 <label for="batteryWearInput">Battery wear cost (€/kWh)</label>
                                 <input type="number" id="batteryWearInput" min="0" step="0.01" inputmode="decimal" aria-describedby="batteryWearHint" />
                                 <p class="hint" id="batteryWearHint">Applied as a throughput penalty in the optimization to limit excessive cycling.</p>
@@ -147,7 +167,7 @@
                             <div class="field checkbox-field">
                                 <label class="checkbox" for="exportLimitToggle">
                                     <input type="checkbox" id="exportLimitToggle" aria-describedby="exportLimitHint" />
-                                    <span>PV export is limited by the inverter</span>
+                                    <span>PV power is limited by the inverter</span>
                                 </label>
                                 <p class="hint" id="exportLimitHint">Enable when export throttling keeps PV power below the array&apos;s potential once batteries are full.</p>
                             </div>
@@ -163,7 +183,7 @@
                                     <label for="importTariffMode">Mode</label>
                                     <select id="importTariffMode" aria-describedby="importTariffHint">
                                         <option value="constant">Constant price</option>
-                                        <option value="spot_plus_constant">Spot + constant adder</option>
+                                        <option value="spot_plus_constant">Spot price with offset</option>
                                         <option value="dual_rate">Dual-rate schedule</option>
                                     </select>
                                     <p class="hint" id="importTariffHint">Apply a single fixed rate to every interval.</p>
@@ -202,7 +222,7 @@
                                     <label for="exportTariffMode">Mode</label>
                                     <select id="exportTariffMode" aria-describedby="exportTariffHint">
                                         <option value="constant">Constant price</option>
-                                        <option value="spot_plus_constant">Spot + constant adder</option>
+                                        <option value="spot_plus_constant">Spot price with offset</option>
                                         <option value="dual_rate">Dual-rate schedule</option>
                                     </select>
                                     <p class="hint" id="exportTariffHint">Apply a single fixed rate to every interval.</p>

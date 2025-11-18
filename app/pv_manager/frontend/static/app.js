@@ -27,6 +27,7 @@ let lastTrainingRunning = false;
 let lastCycleRunning = false;
 let autoRefreshTimer = null;
 let pendingForecastRefresh = null;
+let refreshAllPromise = null;
 const TARIFF_MODES = ['constant', 'spot_plus_constant', 'dual_rate'];
 const houseTrigger = document.getElementById('houseEntityTrigger');
 const pvTrigger = document.getElementById('pvEntityTrigger');
@@ -41,6 +42,93 @@ const inverterMessage = document.getElementById('inverterMessage');
 const batteryMessage = document.getElementById('batteryMessage');
 const batteryWearInput = document.getElementById('batteryWearInput');
 const batteryWearHint = document.getElementById('batteryWearHint');
+const batterySocMinInput = document.getElementById('batterySocMinInput');
+const batterySocMinHint = document.getElementById('batterySocMinHint');
+const batterySocMaxInput = document.getElementById('batterySocMaxInput');
+const batterySocMaxHint = document.getElementById('batterySocMaxHint');
+const batteryCapacityInput = document.getElementById('batteryCapacityInput');
+const batteryCapacityHint = document.getElementById('batteryCapacityHint');
+const batteryPowerInput = document.getElementById('batteryPowerInput');
+const batteryPowerHint = document.getElementById('batteryPowerHint');
+const BATTERY_CAPACITY_HINT_TEXT = 'Defines how much energy the optimization can store in the battery.';
+const BATTERY_POWER_HINT_TEXT = 'Set to the inverter\'s continuous charge or discharge power limit.';
+const BATTERY_WEAR_HINT_TEXT = 'Applied as a throughput penalty in the optimization to limit excessive cycling.';
+const BATTERY_SOC_MIN_HINT_TEXT = 'Keep at least this much charge reserved for resiliency.';
+const BATTERY_SOC_MAX_HINT_TEXT = 'Upper bound on usable charge to limit battery wear.';
+const batteryFieldConfigs = {
+    capacity_kwh: {
+        input: batteryCapacityInput,
+        hintEl: batteryCapacityHint,
+        hintText: BATTERY_CAPACITY_HINT_TEXT,
+        min: 0.0,
+        minInclusive: false,
+        pendingMessage: 'Saving battery capacity…',
+        invalidMessage: 'Battery capacity must be greater than zero.',
+        invalidHint: 'Enter a capacity greater than zero to reflect your battery pack.',
+    },
+    power_limit_kw: {
+        input: batteryPowerInput,
+        hintEl: batteryPowerHint,
+        hintText: BATTERY_POWER_HINT_TEXT,
+        min: 0.0,
+        minInclusive: false,
+        pendingMessage: 'Saving power limit…',
+        invalidMessage: 'Charge / discharge limit must be greater than zero.',
+        invalidHint: 'Enter the inverter\'s continuous charge or discharge power in kW.',
+    },
+    wear_cost_eur_per_kwh: {
+        input: batteryWearInput,
+        hintEl: batteryWearHint,
+        hintText: BATTERY_WEAR_HINT_TEXT,
+        min: 0.0,
+        minInclusive: true,
+        pendingMessage: 'Saving wear cost…',
+        invalidMessage: 'Battery wear cost must be a non-negative number.',
+        invalidHint: 'Enter a non-negative number to penalize battery throughput.',
+    },
+    soc_min: {
+        input: batterySocMinInput,
+        hintEl: batterySocMinHint,
+        hintText: BATTERY_SOC_MIN_HINT_TEXT,
+        min: 0.0,
+        minInclusive: true,
+        max: 0.98,
+        maxInclusive: true,
+        formatPercent: true,
+        epsilon: 0.001,
+        pendingMessage: 'Saving reserve floor…',
+        invalidMessage: 'Reserve floor must be between 0% and 98% and below the maximum.',
+        invalidHint: 'Reserve floor must stay below the usable maximum and between 0% and 98%.',
+        extraValidate: (value) => {
+            ensureBatterySettings();
+            if (value >= batterySettings.soc_max - 0.01) {
+                return 'Reserve floor must stay below the maximum.';
+            }
+            return null;
+        },
+    },
+    soc_max: {
+        input: batterySocMaxInput,
+        hintEl: batterySocMaxHint,
+        hintText: BATTERY_SOC_MAX_HINT_TEXT,
+        min: 0.02,
+        minInclusive: true,
+        max: 1.0,
+        maxInclusive: true,
+        formatPercent: true,
+        epsilon: 0.001,
+        pendingMessage: 'Saving maximum SoC…',
+        invalidMessage: 'Maximum SoC must be between 2% and 100% and above the reserve floor.',
+        invalidHint: 'Maximum SoC must be between 2% and 100% and stay above the reserve floor.',
+        extraValidate: (value) => {
+            ensureBatterySettings();
+            if (value <= batterySettings.soc_min + 0.01) {
+                return 'Maximum SoC must stay above the reserve floor.';
+            }
+            return null;
+        },
+    },
+};
 const pricingForm = document.getElementById('pricingForm');
 const pricingMessage = document.getElementById('pricingMessage');
 const savePricingBtn = document.getElementById('savePricingBtn');
@@ -61,6 +149,24 @@ const exportPeakRateInput = document.getElementById('exportPeakRate');
 const exportOffpeakRateInput = document.getElementById('exportOffpeakRate');
 const exportPeakStartInput = document.getElementById('exportPeakStart');
 const exportPeakEndInput = document.getElementById('exportPeakEnd');
+const tariffFieldBindings = {
+    import: [
+        { key: 'constant_eur_per_kwh', type: 'number', element: importConstantInput },
+        { key: 'spot_offset_eur_per_kwh', type: 'number', element: importSpotOffsetInput },
+        { key: 'dual_peak_eur_per_kwh', type: 'number', element: importPeakRateInput },
+        { key: 'dual_offpeak_eur_per_kwh', type: 'number', element: importOffpeakRateInput },
+        { key: 'dual_peak_start_local', type: 'time', element: importPeakStartInput },
+        { key: 'dual_peak_end_local', type: 'time', element: importPeakEndInput },
+    ],
+    export: [
+        { key: 'constant_eur_per_kwh', type: 'number', element: exportConstantInput },
+        { key: 'spot_offset_eur_per_kwh', type: 'number', element: exportSpotOffsetInput },
+        { key: 'dual_peak_eur_per_kwh', type: 'number', element: exportPeakRateInput },
+        { key: 'dual_offpeak_eur_per_kwh', type: 'number', element: exportOffpeakRateInput },
+        { key: 'dual_peak_start_local', type: 'time', element: exportPeakStartInput },
+        { key: 'dual_peak_end_local', type: 'time', element: exportPeakEndInput },
+    ],
+};
 const entityModal = document.getElementById('entityModal');
 const entityModalBackdrop = document.getElementById('entityModalBackdrop');
 const entityModalClose = document.getElementById('entityModalClose');
@@ -70,12 +176,11 @@ const entityListContainer = document.getElementById('entityList');
 const exportLimitToggle = document.getElementById('exportLimitToggle');
 let batterySettings = null;
 let batteryBusy = false;
-let batteryMessageClearTimer = null;
+const messageTimers = Object.create(null);
 let pricingSettings = null;
 let pricingSaveTimer = null;
 let pricingSaving = false;
 let pricingPendingResave = false;
-let pricingMessageClearTimer = null;
 const PRICING_SAVE_DEBOUNCE_MS = 400;
 
 function computeHourCycle(locale) {
@@ -195,8 +300,7 @@ function toggleSettings() {
     if (showingSettings) {
         loadSettingsData();
     } else {
-        refreshStatus();
-        refreshForecast();
+        refreshAll();
     }
 }
 
@@ -324,48 +428,44 @@ function statisticLabel(item) {
     return item.unit ? `${name} (${item.unit})` : name;
 }
 
-function setInverterMessage(text, kind = 'info') {
-    if (!inverterMessage) return;
+function setMessage(element, text, kind = 'info', autoHideMs = 0, timerKey) {
+    if (!element) return;
+    if (timerKey && messageTimers[timerKey]) {
+        clearTimeout(messageTimers[timerKey]);
+        messageTimers[timerKey] = null;
+    }
     if (!text) {
-        inverterMessage.style.display = 'none';
-        inverterMessage.classList.remove('error');
-        inverterMessage.textContent = '';
+        element.style.display = 'none';
+        element.classList.remove('error');
+        element.textContent = '';
         return;
     }
-    inverterMessage.style.display = 'block';
+    element.style.display = 'block';
+    element.textContent = text;
     if (kind === 'error') {
-        inverterMessage.classList.add('error');
+        element.classList.add('error');
     } else {
-        inverterMessage.classList.remove('error');
+        element.classList.remove('error');
     }
-    inverterMessage.textContent = text;
+    if (timerKey && text && kind !== 'error' && autoHideMs > 0) {
+        messageTimers[timerKey] = setTimeout(() => {
+            messageTimers[timerKey] = null;
+            setMessage(element, '');
+        }, autoHideMs);
+    }
+}
+
+function setInverterMessage(text, kind = 'info') {
+    setMessage(inverterMessage, text, kind);
 }
 
 function setBatteryMessage(text, kind = 'info', autoHideMs = 0) {
-    if (!batteryMessage) return;
-    if (batteryMessageClearTimer) {
-        clearTimeout(batteryMessageClearTimer);
-        batteryMessageClearTimer = null;
-    }
-    if (!text) {
-        batteryMessage.style.display = 'none';
-        batteryMessage.textContent = '';
-        batteryMessage.classList.remove('error');
-        return;
-    }
-    batteryMessage.style.display = 'block';
-    batteryMessage.textContent = text;
-    if (kind === 'error') {
-        batteryMessage.classList.add('error');
-    } else {
-        batteryMessage.classList.remove('error');
-    }
-    if (text && kind !== 'error' && autoHideMs > 0) {
-        batteryMessageClearTimer = setTimeout(() => {
-            batteryMessageClearTimer = null;
-            setBatteryMessage('');
-        }, autoHideMs);
-    }
+    setMessage(batteryMessage, text, kind, autoHideMs, 'battery');
+}
+
+function bindClick(element, handler) {
+    if (!element || typeof handler !== 'function') return;
+    element.addEventListener('click', handler);
 }
 
 function renderInverterHints() {
@@ -444,6 +544,74 @@ function defaultPricingSettings() {
     };
 }
 
+function defaultBatterySettings() {
+    return {
+        soc_sensor: null,
+        wear_cost_eur_per_kwh: 0.1,
+        capacity_kwh: 10,
+        power_limit_kw: 3,
+        soc_min: 0.1,
+        soc_max: 0.9,
+    };
+}
+
+function normalizeBatterySettings(raw) {
+    const defaults = defaultBatterySettings();
+    if (!raw || typeof raw !== 'object') {
+        return defaults;
+    }
+    const normalized = { ...defaults };
+    if (raw.soc_sensor && typeof raw.soc_sensor === 'object' && raw.soc_sensor.entity_id) {
+        normalized.soc_sensor = {
+            entity_id: raw.soc_sensor.entity_id,
+            unit: raw.soc_sensor.unit || null,
+        };
+    }
+    const wear = Number(raw.wear_cost_eur_per_kwh);
+    normalized.wear_cost_eur_per_kwh = Number.isFinite(wear) && wear >= 0 ? wear : defaults.wear_cost_eur_per_kwh;
+    const capacity = Number(raw.capacity_kwh);
+    normalized.capacity_kwh = Number.isFinite(capacity) && capacity > 0 ? capacity : defaults.capacity_kwh;
+    const powerLimit = Number(raw.power_limit_kw);
+    normalized.power_limit_kw = Number.isFinite(powerLimit) && powerLimit > 0 ? powerLimit : defaults.power_limit_kw;
+    const socMin = Number(raw.soc_min);
+    const socMax = Number(raw.soc_max);
+    normalized.soc_min = Number.isFinite(socMin) && socMin >= 0 && socMin <= 0.98 ? socMin : defaults.soc_min;
+    normalized.soc_max = Number.isFinite(socMax) && socMax > 0 && socMax <= 1 ? socMax : defaults.soc_max;
+    normalized.soc_min = Math.min(Math.max(normalized.soc_min, 0), 0.98);
+    normalized.soc_max = Math.min(Math.max(normalized.soc_max, 0.02), 1);
+    if (normalized.soc_max <= normalized.soc_min + 0.005) {
+        normalized.soc_max = Math.min(1, Math.max(normalized.soc_min + 0.05, defaults.soc_max));
+    }
+    return normalized;
+}
+
+function ensureBatterySettings() {
+    if (!batterySettings || typeof batterySettings !== 'object') {
+        batterySettings = defaultBatterySettings();
+    }
+    if (!batterySettings.soc_sensor || typeof batterySettings.soc_sensor !== 'object') {
+        batterySettings.soc_sensor = null;
+    }
+    if (!Number.isFinite(Number(batterySettings.wear_cost_eur_per_kwh)) || Number(batterySettings.wear_cost_eur_per_kwh) < 0) {
+        batterySettings.wear_cost_eur_per_kwh = 0.1;
+    }
+    if (!Number.isFinite(Number(batterySettings.capacity_kwh)) || Number(batterySettings.capacity_kwh) <= 0) {
+        batterySettings.capacity_kwh = 10;
+    }
+    if (!Number.isFinite(Number(batterySettings.power_limit_kw)) || Number(batterySettings.power_limit_kw) <= 0) {
+        batterySettings.power_limit_kw = 3;
+    }
+    const defaults = defaultBatterySettings();
+    const socMin = Number(batterySettings.soc_min);
+    batterySettings.soc_min = Number.isFinite(socMin) && socMin >= 0 ? Math.min(socMin, 0.98) : defaults.soc_min;
+    const socMax = Number(batterySettings.soc_max);
+    batterySettings.soc_max = Number.isFinite(socMax) && socMax > 0 ? Math.min(Math.max(socMax, batterySettings.soc_min + 0.01), 1) : defaults.soc_max;
+    if (batterySettings.soc_max <= batterySettings.soc_min + 0.005) {
+        batterySettings.soc_max = Math.min(1, batterySettings.soc_min + 0.05);
+    }
+    return batterySettings;
+}
+
 function normalizeTariffConfig(raw, scope) {
     const defaults = defaultTariffConfig(scope);
     const cfg = { ...defaults };
@@ -495,6 +663,13 @@ function normalizePricingSettings(raw) {
     return settings;
 }
 
+function resolveTariffConfig(scope) {
+    ensurePricingSettings();
+    const normalized = normalizeTariffConfig(pricingSettings[scope], scope);
+    pricingSettings[scope] = normalized;
+    return normalized;
+}
+
 function applySettingsPayload(payload) {
     if (Array.isArray(payload.statistics)) {
         statisticsCatalog = payload.statistics;
@@ -507,18 +682,9 @@ function applySettingsPayload(payload) {
             inverterSettings = payload.settings.inverter;
         }
         if (payload.settings.battery) {
-            const incoming = payload.settings.battery;
-            const wearRaw = Number(incoming.wear_cost_eur_per_kwh);
-            const wearCost = Number.isFinite(wearRaw) && wearRaw >= 0 ? wearRaw : 0.1;
-            batterySettings = {
-                ...incoming,
-                soc_sensor: incoming.soc_sensor || null,
-                wear_cost_eur_per_kwh: wearCost,
-            };
-        } else if (!batterySettings) {
-            batterySettings = { soc_sensor: null, wear_cost_eur_per_kwh: 0.1 };
-        } else if (typeof batterySettings.wear_cost_eur_per_kwh !== 'number') {
-            batterySettings.wear_cost_eur_per_kwh = 0.1;
+            batterySettings = normalizeBatterySettings(payload.settings.battery);
+        } else {
+            batterySettings = normalizeBatterySettings(null);
         }
         if (payload.settings.pricing) {
             pricingSettings = normalizePricingSettings(payload.settings.pricing);
@@ -629,7 +795,8 @@ function renderInverterForm() {
 }
 
 function renderBatteryForm() {
-    if (!batteryTrigger || !batterySettings) return;
+    if (!batteryTrigger) return;
+    ensureBatterySettings();
     const selection = batterySettings.soc_sensor || null;
     updateEntityButton(
         batteryTrigger,
@@ -655,18 +822,58 @@ function renderBatteryForm() {
             setBatteryMessage('');
         }
     }
-    if (batteryWearInput) {
-        const wearValue = Number(batterySettings.wear_cost_eur_per_kwh);
-        batteryWearInput.value = Number.isFinite(wearValue) && wearValue >= 0 ? wearValue.toString() : '';
-        if (batteryBusy) {
-            batteryWearInput.setAttribute('disabled', 'disabled');
-        } else {
-            batteryWearInput.removeAttribute('disabled');
+    Object.keys(batteryFieldConfigs).forEach((fieldKey) => {
+        renderBatteryFieldInput(fieldKey);
+    });
+}
+
+function getBatteryFieldConfig(fieldKey) {
+    return batteryFieldConfigs[fieldKey] || null;
+}
+
+function formatBatteryFieldDisplayValue(config, rawValue) {
+    if (!config) return '';
+    const numeric = Number(rawValue);
+    if (!Number.isFinite(numeric)) {
+        return '';
+    }
+    const scaled = config.formatPercent ? numeric * 100 : numeric;
+    const rounded = Math.round((scaled + Number.EPSILON) * 1000) / 1000;
+    if (!Number.isFinite(rounded)) {
+        return '';
+    }
+    return rounded.toString();
+}
+
+function renderBatteryFieldInput(fieldKey, options = {}) {
+    const config = getBatteryFieldConfig(fieldKey);
+    if (!config || !config.input) {
+        return;
+    }
+    const value = batterySettings ? batterySettings[fieldKey] : null;
+    config.input.value = formatBatteryFieldDisplayValue(config, value);
+    if (batteryBusy) {
+        config.input.setAttribute('disabled', 'disabled');
+    } else {
+        config.input.removeAttribute('disabled');
+    }
+    if (config.hintEl) {
+        if (options.resetHint) {
+            config.hintEl.classList.remove('error');
+            config.hintEl.textContent = config.hintText;
+        } else if (!config.hintEl.classList.contains('error')) {
+            config.hintEl.textContent = config.hintText;
         }
     }
-    if (batteryWearHint && !batteryWearHint.classList.contains('error')) {
-        batteryWearHint.textContent = 'Applied as a throughput penalty in the optimization to limit excessive cycling.';
+}
+
+function showBatteryFieldError(config, message, hintOverride) {
+    const fallback = message || 'Enter a valid number.';
+    if (config && config.hintEl) {
+        config.hintEl.classList.add('error');
+        config.hintEl.textContent = hintOverride || config.invalidHint || fallback;
     }
+    setBatteryMessage(message || config.invalidMessage || 'Enter a valid number.', 'error');
 }
 
 function ensurePricingSettings() {
@@ -683,29 +890,7 @@ function ensurePricingSettings() {
 }
 
 function setPricingMessage(text, kind = 'info', autoHideMs = 0) {
-    if (!pricingMessage) return;
-    if (pricingMessageClearTimer) {
-        clearTimeout(pricingMessageClearTimer);
-        pricingMessageClearTimer = null;
-    }
-    if (!text) {
-        pricingMessage.style.display = 'none';
-        pricingMessage.textContent = '';
-        pricingMessage.classList.remove('error');
-        return;
-    }
-    pricingMessage.style.display = 'block';
-    pricingMessage.textContent = text;
-    pricingMessage.classList.remove('error');
-    if (kind === 'error') {
-        pricingMessage.classList.add('error');
-    }
-    if (text && kind !== 'error' && autoHideMs > 0) {
-        pricingMessageClearTimer = setTimeout(() => {
-            pricingMessageClearTimer = null;
-            setPricingMessage('');
-        }, autoHideMs);
-    }
+    setMessage(pricingMessage, text, kind, autoHideMs, 'pricing');
 }
 
 function setNumericInputValue(input, value) {
@@ -726,7 +911,7 @@ function setTimeInputValue(input, value, fallback) {
 }
 
 function updateTariffVisibility(scope) {
-    const cfg = pricingSettings && pricingSettings[scope] ? pricingSettings[scope] : defaultTariffConfig(scope);
+    const cfg = resolveTariffConfig(scope);
     const mode = cfg.mode && TARIFF_MODES.includes(cfg.mode) ? cfg.mode : defaultTariffConfig(scope).mode;
     const nodes = document.querySelectorAll(`[data-tariff-scope="${scope}"]`);
     nodes.forEach((node) => {
@@ -743,7 +928,7 @@ function updateTariffVisibility(scope) {
 function updateTariffHint(scope) {
     const hintEl = scope === 'import' ? importTariffHint : exportTariffHint;
     if (!hintEl) return;
-    const cfg = pricingSettings && pricingSettings[scope] ? pricingSettings[scope] : defaultTariffConfig(scope);
+    const cfg = resolveTariffConfig(scope);
     const mode = cfg.mode && TARIFF_MODES.includes(cfg.mode) ? cfg.mode : defaultTariffConfig(scope).mode;
     const label = scope === 'import' ? 'Import' : 'Export';
     let text = `${label} price configuration pending.`;
@@ -759,47 +944,31 @@ function updateTariffHint(scope) {
 
 function renderPricingForm() {
     if (!pricingForm) return;
-    ensurePricingSettings();
-    const importDefaults = defaultTariffConfig('import');
-    const exportDefaults = defaultTariffConfig('export');
-    const importConfig = normalizeTariffConfig(pricingSettings.import, 'import');
-    const exportConfig = normalizeTariffConfig(pricingSettings.export, 'export');
-    pricingSettings = {
-        import: importConfig,
-        export: exportConfig,
-    };
-
-    if (importTariffModeSelect) {
-        importTariffModeSelect.value = importConfig.mode;
-    }
-    if (exportTariffModeSelect) {
-        exportTariffModeSelect.value = exportConfig.mode;
-    }
-
-    setNumericInputValue(importConstantInput, importConfig.constant_eur_per_kwh);
-    setNumericInputValue(importSpotOffsetInput, importConfig.spot_offset_eur_per_kwh);
-    setNumericInputValue(importPeakRateInput, importConfig.dual_peak_eur_per_kwh);
-    setNumericInputValue(importOffpeakRateInput, importConfig.dual_offpeak_eur_per_kwh);
-    setTimeInputValue(importPeakStartInput, importConfig.dual_peak_start_local, importDefaults.dual_peak_start_local);
-    setTimeInputValue(importPeakEndInput, importConfig.dual_peak_end_local, importDefaults.dual_peak_end_local);
-
-    setNumericInputValue(exportConstantInput, exportConfig.constant_eur_per_kwh);
-    setNumericInputValue(exportSpotOffsetInput, exportConfig.spot_offset_eur_per_kwh);
-    setNumericInputValue(exportPeakRateInput, exportConfig.dual_peak_eur_per_kwh);
-    setNumericInputValue(exportOffpeakRateInput, exportConfig.dual_offpeak_eur_per_kwh);
-    setTimeInputValue(exportPeakStartInput, exportConfig.dual_peak_start_local, exportDefaults.dual_peak_start_local);
-    setTimeInputValue(exportPeakEndInput, exportConfig.dual_peak_end_local, exportDefaults.dual_peak_end_local);
-
-    updateTariffVisibility('import');
-    updateTariffHint('import');
-    updateTariffVisibility('export');
-    updateTariffHint('export');
+    ['import', 'export'].forEach((scope) => {
+        const config = resolveTariffConfig(scope);
+        const defaults = defaultTariffConfig(scope);
+        const select = scope === 'import' ? importTariffModeSelect : exportTariffModeSelect;
+        if (select) {
+            select.value = config.mode;
+        }
+        const bindings = tariffFieldBindings[scope] || [];
+        bindings.forEach(({ key, type, element }) => {
+            if (!element) return;
+            if (type === 'time') {
+                setTimeInputValue(element, config[key], defaults[key]);
+            } else {
+                setNumericInputValue(element, config[key]);
+            }
+        });
+        updateTariffVisibility(scope);
+        updateTariffHint(scope);
+    });
 }
 
 function handleTariffModeChange(scope, mode) {
-    ensurePricingSettings();
+    const config = resolveTariffConfig(scope);
     const normalized = TARIFF_MODES.includes(mode) ? mode : defaultTariffConfig(scope).mode;
-    pricingSettings[scope].mode = normalized;
+    config.mode = normalized;
     renderPricingForm();
     schedulePricingSave();
 }
@@ -884,36 +1053,39 @@ async function savePricingSettings(manual = false) {
     }
 }
 
-function bindTariffNumericInput(input, scope, key) {
+function bindTariffInput(input, scope, key, type) {
     if (!input) return;
     input.addEventListener('change', (event) => {
         ensurePricingSettings();
-        const raw = typeof event.target.value === 'string' ? event.target.value.trim() : '';
-        if (!raw) {
-            pricingSettings[scope][key] = null;
-            schedulePricingSave();
-            return;
-        }
-        const parsed = Number.parseFloat(raw);
-        if (Number.isFinite(parsed)) {
-            pricingSettings[scope][key] = parsed;
+        if (type === 'time') {
+            const fallback = defaultTariffConfig(scope)[key];
+            const sanitized = sanitizeTimeValue(event.target.value, fallback);
+            pricingSettings[scope][key] = sanitized;
+            event.target.value = sanitized;
         } else {
-            pricingSettings[scope][key] = null;
-            event.target.value = '';
+            const raw = typeof event.target.value === 'string' ? event.target.value.trim() : '';
+            if (!raw) {
+                pricingSettings[scope][key] = null;
+                schedulePricingSave();
+                return;
+            }
+            const parsed = Number.parseFloat(raw);
+            if (Number.isFinite(parsed)) {
+                pricingSettings[scope][key] = parsed;
+            } else {
+                pricingSettings[scope][key] = null;
+                event.target.value = '';
+            }
         }
         schedulePricingSave();
     });
 }
 
-function bindTariffTimeInput(input, scope, key) {
-    if (!input) return;
-    input.addEventListener('change', (event) => {
-        ensurePricingSettings();
-        const fallback = defaultTariffConfig(scope)[key];
-        const sanitized = sanitizeTimeValue(event.target.value, fallback);
-        pricingSettings[scope][key] = sanitized;
-        event.target.value = sanitized;
-        schedulePricingSave();
+function bindTariffFields() {
+    Object.entries(tariffFieldBindings).forEach(([scope, bindings]) => {
+        bindings.forEach(({ element, key, type }) => {
+            bindTariffInput(element, scope, key, type);
+        });
     });
 }
 
@@ -1047,78 +1219,107 @@ async function updateBatterySelection(entityId) {
     }
 }
 
-async function submitBatteryWearCost(costValue) {
-    if (!batterySettings || batteryBusy) return;
-    if (!Number.isFinite(costValue) || costValue < 0) {
-        if (batteryWearHint) {
-            batteryWearHint.classList.add('error');
-            batteryWearHint.textContent = 'Enter a non-negative number to penalize battery throughput.';
-        }
-        setBatteryMessage('Battery wear cost must be a non-negative number.', 'error');
-        if (batteryWearInput) {
-            const current = Number(batterySettings.wear_cost_eur_per_kwh);
-            batteryWearInput.value = Number.isFinite(current) && current >= 0 ? current.toString() : '';
-        }
-        return;
-    }
-    const current = Number(batterySettings.wear_cost_eur_per_kwh);
-    if (Number.isFinite(current) && Math.abs(current - costValue) < 1e-6) {
-        return;
-    }
+async function submitBatteryConfig(partial, options = {}) {
+    ensureBatterySettings();
+    if (batteryBusy) return false;
     batteryBusy = true;
     renderBatteryForm();
-    let finalMessage = '';
-    let finalKind = 'info';
+    if (options.pendingMessage !== false) {
+        const pendingText = typeof options.pendingMessage === 'string' ? options.pendingMessage : 'Saving battery settings…';
+        setBatteryMessage(pendingText);
+    }
     try {
         const payload = await fetchJson('/api/settings/battery', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ wear_cost_eur_per_kwh: costValue }),
+            body: JSON.stringify(partial),
         });
         applySettingsPayload(payload);
-        if (batteryWearHint) {
-            batteryWearHint.classList.remove('error');
-            batteryWearHint.textContent = 'Applied as a throughput penalty in the optimization to limit excessive cycling.';
+        if (typeof options.onSuccess === 'function') {
+            options.onSuccess();
         }
+        if (options.successMessage) {
+            setBatteryMessage(options.successMessage, 'success', options.successAutoHideMs || 2500);
+        } else if (options.pendingMessage !== false) {
+            setBatteryMessage('');
+        }
+        return true;
     } catch (err) {
-        finalMessage = err instanceof Error ? err.message : String(err);
-        finalKind = 'error';
-        if (batteryWearHint) {
-            batteryWearHint.classList.add('error');
-            batteryWearHint.textContent = 'Failed to save wear cost. ' + String(finalMessage);
-        }
+        setBatteryMessage(err instanceof Error ? err.message : String(err), 'error');
+        return false;
     } finally {
         batteryBusy = false;
         renderBatteryForm();
-        if (finalMessage) {
-            setBatteryMessage(finalMessage, finalKind);
-        } else {
-            setBatteryMessage('');
-        }
     }
 }
 
-function onBatteryWearInputChange(event) {
-    if (!batterySettings || !event || !event.target) return;
-    const raw = event.target.value;
-    if (typeof raw !== 'string' || !raw.trim()) {
-        renderBatteryForm();
+function handleBatteryNumericInput(fieldKey) {
+    ensureBatterySettings();
+    const config = getBatteryFieldConfig(fieldKey);
+    if (!config || !config.input) {
+        return;
+    }
+    if (batteryBusy) {
+        return;
+    }
+    if (config.hintEl && config.hintText && !config.hintEl.classList.contains('error')) {
+        config.hintEl.textContent = config.hintText;
+    }
+    const raw = typeof config.input.value === 'string' ? config.input.value.trim() : '';
+    if (!raw) {
+        renderBatteryFieldInput(fieldKey);
         return;
     }
     const parsed = Number.parseFloat(raw);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-        if (batteryWearHint) {
-            batteryWearHint.classList.add('error');
-            batteryWearHint.textContent = 'Enter a non-negative number to penalize battery throughput.';
-        }
-        setBatteryMessage('Battery wear cost must be a non-negative number.', 'error');
-        if (batteryWearInput) {
-            const current = Number(batterySettings.wear_cost_eur_per_kwh);
-            batteryWearInput.value = Number.isFinite(current) && current >= 0 ? current.toString() : '';
-        }
+    if (!Number.isFinite(parsed)) {
+        showBatteryFieldError(config, config.invalidMessage, config.invalidHint);
+        renderBatteryFieldInput(fieldKey);
         return;
     }
-    submitBatteryWearCost(parsed);
+    let normalized = parsed;
+    if (config.formatPercent) {
+        normalized = parsed / 100;
+    }
+    if (!Number.isFinite(normalized)) {
+        showBatteryFieldError(config, config.invalidMessage, config.invalidHint);
+        renderBatteryFieldInput(fieldKey);
+        return;
+    }
+    const min = typeof config.min === 'number' ? config.min : -Infinity;
+    const max = typeof config.max === 'number' ? config.max : Infinity;
+    const minInclusive = config.minInclusive !== false;
+    const maxInclusive = config.maxInclusive !== false;
+    const belowMin = minInclusive ? normalized < min : normalized <= min;
+    const aboveMax = maxInclusive ? normalized > max : normalized >= max;
+    if (belowMin || aboveMax) {
+        showBatteryFieldError(config, config.invalidMessage, config.invalidHint);
+        renderBatteryFieldInput(fieldKey);
+        return;
+    }
+    if (typeof config.extraValidate === 'function') {
+        const extraError = config.extraValidate(normalized);
+        if (extraError) {
+            showBatteryFieldError(config, extraError, extraError);
+            renderBatteryFieldInput(fieldKey);
+            return;
+        }
+    }
+    const current = Number(batterySettings[fieldKey]);
+    const epsilon = typeof config.epsilon === 'number' ? config.epsilon : 1e-6;
+    if (Number.isFinite(current) && Math.abs(current - normalized) <= epsilon) {
+        renderBatteryFieldInput(fieldKey);
+        return;
+    }
+    submitBatteryConfig(
+        { [fieldKey]: normalized },
+        {
+            pendingMessage: config.pendingMessage,
+            successMessage: config.successMessage,
+            onSuccess: () => {
+                renderBatteryFieldInput(fieldKey, { resetHint: true });
+            },
+        },
+    );
 }
 
 function openEntityModal(target) {
@@ -1708,6 +1909,21 @@ async function refreshForecast() {
     }
 }
 
+async function refreshAll() {
+    if (refreshAllPromise) {
+        return refreshAllPromise;
+    }
+    const tasks = [refreshStatus(), refreshForecast()];
+    refreshAllPromise = Promise.all(tasks)
+        .catch(() => {
+            // individual refresh functions already surface their own errors
+        })
+        .finally(() => {
+            refreshAllPromise = null;
+        });
+    return refreshAllPromise;
+}
+
 async function triggerTraining() {
     const button = document.getElementById('trainBtn');
     button.disabled = true;
@@ -1719,7 +1935,7 @@ async function triggerTraining() {
         errorEl.style.display = 'block';
         errorEl.textContent = err instanceof Error ? `Failed to start training: ${err.message}` : String(err);
     }
-    await refreshStatus();
+    await refreshAll();
     button.textContent = button.disabled ? 'Training…' : 'Trigger Training';
 }
 
@@ -1753,83 +1969,59 @@ async function triggerCycle() {
             button.textContent = 'Recompute Plan';
         }
     }
-    await refreshStatus();
-    await refreshForecast();
+    await refreshAll();
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('refreshBtn').addEventListener('click', () => {
-        refreshStatus();
-        refreshForecast();
-    });
-    document.getElementById('trainBtn').addEventListener('click', triggerTraining);
-    document.getElementById('cycleBtn').addEventListener('click', triggerCycle);
-    document.getElementById('settingsBtn').addEventListener('click', toggleSettings);
+    bindClick(document.getElementById('refreshBtn'), refreshAll);
+    bindClick(document.getElementById('trainBtn'), triggerTraining);
+    bindClick(document.getElementById('cycleBtn'), triggerCycle);
+    bindClick(document.getElementById('settingsBtn'), toggleSettings);
     document.querySelectorAll('.settings-nav button').forEach((btn) => {
         btn.addEventListener('click', () => {
             activateSettingsTab(btn.dataset.settingsTab);
         });
     });
-    if (houseTrigger) {
-        houseTrigger.addEventListener('click', () => openEntityModal('house_consumption'));
-    }
-    if (pvTrigger) {
-        pvTrigger.addEventListener('click', () => openEntityModal('pv_power'));
-    }
-    if (batteryTrigger) {
-        batteryTrigger.addEventListener('click', () => openEntityModal('battery_soc'));
-    }
-    if (batteryWearInput) {
-        batteryWearInput.addEventListener('change', onBatteryWearInputChange);
-        batteryWearInput.addEventListener('blur', onBatteryWearInputChange);
-    }
+    [
+        [houseTrigger, 'house_consumption'],
+        [pvTrigger, 'pv_power'],
+        [batteryTrigger, 'battery_soc'],
+    ].forEach(([trigger, target]) => {
+        bindClick(trigger, () => openEntityModal(target));
+    });
+    Object.entries(batteryFieldConfigs).forEach(([fieldKey, config]) => {
+        if (!config.input) {
+            return;
+        }
+        const handler = () => handleBatteryNumericInput(fieldKey);
+        config.input.addEventListener('change', handler);
+        config.input.addEventListener('blur', handler);
+    });
     if (exportLimitToggle) {
         exportLimitToggle.addEventListener('change', (event) => {
             updateExportLimitSetting(event.target.checked);
         });
     }
-    if (entityModalBackdrop) {
-        entityModalBackdrop.addEventListener('click', closeEntityModal);
-    }
-    if (entityModalClose) {
-        entityModalClose.addEventListener('click', closeEntityModal);
-    }
-    if (entityModalCancel) {
-        entityModalCancel.addEventListener('click', closeEntityModal);
-    }
+    [entityModalBackdrop, entityModalClose, entityModalCancel].forEach((element) => {
+        bindClick(element, closeEntityModal);
+    });
     if (entitySearchInput) {
         entitySearchInput.addEventListener('input', (event) => {
             renderEntityList(event.target.value);
         });
     }
-    if (importTariffModeSelect) {
-        importTariffModeSelect.addEventListener('change', (event) => {
-            handleTariffModeChange('import', event.target.value);
+    [
+        [importTariffModeSelect, 'import'],
+        [exportTariffModeSelect, 'export'],
+    ].forEach(([select, scope]) => {
+        if (!select) return;
+        select.addEventListener('change', (event) => {
+            handleTariffModeChange(scope, event.target.value);
         });
-    }
-    if (exportTariffModeSelect) {
-        exportTariffModeSelect.addEventListener('change', (event) => {
-            handleTariffModeChange('export', event.target.value);
-        });
-    }
-    bindTariffNumericInput(importConstantInput, 'import', 'constant_eur_per_kwh');
-    bindTariffNumericInput(importSpotOffsetInput, 'import', 'spot_offset_eur_per_kwh');
-    bindTariffNumericInput(importPeakRateInput, 'import', 'dual_peak_eur_per_kwh');
-    bindTariffNumericInput(importOffpeakRateInput, 'import', 'dual_offpeak_eur_per_kwh');
-    bindTariffTimeInput(importPeakStartInput, 'import', 'dual_peak_start_local');
-    bindTariffTimeInput(importPeakEndInput, 'import', 'dual_peak_end_local');
-    bindTariffNumericInput(exportConstantInput, 'export', 'constant_eur_per_kwh');
-    bindTariffNumericInput(exportSpotOffsetInput, 'export', 'spot_offset_eur_per_kwh');
-    bindTariffNumericInput(exportPeakRateInput, 'export', 'dual_peak_eur_per_kwh');
-    bindTariffNumericInput(exportOffpeakRateInput, 'export', 'dual_offpeak_eur_per_kwh');
-    bindTariffTimeInput(exportPeakStartInput, 'export', 'dual_peak_start_local');
-    bindTariffTimeInput(exportPeakEndInput, 'export', 'dual_peak_end_local');
-    if (savePricingBtn) {
-        savePricingBtn.addEventListener('click', handleSavePricingClick);
-    }
-    if (resetPricingBtn) {
-        resetPricingBtn.addEventListener('click', resetPricingToDefaults);
-    }
+    });
+    bindTariffFields();
+    bindClick(savePricingBtn, handleSavePricingClick);
+    bindClick(resetPricingBtn, resetPricingToDefaults);
     window.addEventListener('keydown', (event) => {
         if (event.key === 'Escape' && entityModal && entityModal.classList.contains('open')) {
             closeEntityModal();
@@ -1837,8 +2029,7 @@ window.addEventListener('DOMContentLoaded', () => {
     });
 
     renderPricingForm();
-    refreshStatus();
-    refreshForecast();
+    refreshAll();
     loadSettingsData();
     updateViewMode();
     renderIntervention(null, 'Current intervention: Waiting for forecast…');
@@ -1846,8 +2037,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
     setInterval(() => {
         if (!showingSettings) {
-            refreshStatus();
-            refreshForecast();
+            refreshAll();
         }
     }, 5 * 60 * 1000);
 });

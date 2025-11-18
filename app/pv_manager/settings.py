@@ -26,6 +26,19 @@ def _sanitize_float(value: Any, *, allow_none: bool = True) -> Optional[float]:
     return numeric
 
 
+def _sanitize_positive_float(value: Any, *, fallback: float, allow_zero: bool = True, minimum: float = 0.0) -> float:
+    numeric = _sanitize_float(value, allow_none=False)
+    if numeric is None:
+        return fallback
+    if allow_zero:
+        if numeric < max(minimum, 0.0):
+            return fallback
+    else:
+        if numeric <= max(minimum, 0.0):
+            return fallback
+    return float(numeric)
+
+
 def _sanitize_time_literal(value: Any, fallback: str) -> str:
     if not isinstance(value, str):
         return fallback
@@ -117,6 +130,10 @@ class InverterSettings:
 class BatterySettings:
     soc_sensor: Optional[EntitySelection] = None
     wear_cost_eur_per_kwh: float = 0.10
+    capacity_kwh: float = 10.0
+    power_limit_kw: float = 3.0
+    soc_min: float = 0.1
+    soc_max: float = 0.9
 
 
 @dataclass
@@ -140,6 +157,10 @@ class AppSettings:
         else:
             payload["battery"] = {"soc_sensor": None}
         payload["battery"]["wear_cost_eur_per_kwh"] = float(self.battery.wear_cost_eur_per_kwh)
+        payload["battery"]["capacity_kwh"] = float(self.battery.capacity_kwh)
+        payload["battery"]["power_limit_kw"] = float(self.battery.power_limit_kw)
+        payload["battery"]["soc_min"] = float(self.battery.soc_min)
+        payload["battery"]["soc_max"] = float(self.battery.soc_max)
         payload["pricing"] = self.pricing.to_dict()
         return payload
 
@@ -204,6 +225,29 @@ def load_settings() -> AppSettings:
     if wear_cost_val < 0 or wear_cost_val != wear_cost_val:  # also guard NaN
         wear_cost_val = _DEFAULT_SETTINGS.battery.wear_cost_eur_per_kwh
 
+    capacity_val = _sanitize_positive_float(
+        battery_data.get("capacity_kwh"),
+        fallback=_DEFAULT_SETTINGS.battery.capacity_kwh,
+        allow_zero=False,
+        minimum=0.1,
+    )
+    power_limit_val = _sanitize_positive_float(
+        battery_data.get("power_limit_kw"),
+        fallback=_DEFAULT_SETTINGS.battery.power_limit_kw,
+        allow_zero=False,
+        minimum=0.1,
+    )
+
+    soc_min_val = _sanitize_float(battery_data.get("soc_min"), allow_none=False)
+    if soc_min_val is None or not (0 <= soc_min_val < 1):
+        soc_min_val = _DEFAULT_SETTINGS.battery.soc_min
+    soc_max_val = _sanitize_float(battery_data.get("soc_max"), allow_none=False)
+    if soc_max_val is None or not (0 < soc_max_val <= 1):
+        soc_max_val = _DEFAULT_SETTINGS.battery.soc_max
+    if soc_max_val <= soc_min_val:
+        soc_max_val = max(soc_min_val + 0.05, _DEFAULT_SETTINGS.battery.soc_max)
+        soc_max_val = min(soc_max_val, 1.0)
+
     pricing_block = data.get("pricing")
     pricing_settings = coerce_pricing_payload(pricing_block, _DEFAULT_SETTINGS.pricing)
 
@@ -219,7 +263,14 @@ def load_settings() -> AppSettings:
             ),
             export_power_limited=export_limit,
         ),
-        battery=BatterySettings(soc_sensor=soc_selection, wear_cost_eur_per_kwh=wear_cost_val),
+        battery=BatterySettings(
+            soc_sensor=soc_selection,
+            wear_cost_eur_per_kwh=wear_cost_val,
+            capacity_kwh=capacity_val,
+            power_limit_kw=power_limit_val,
+            soc_min=float(soc_min_val),
+            soc_max=float(soc_max_val),
+        ),
         pricing=pricing_settings,
     )
 

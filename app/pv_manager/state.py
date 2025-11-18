@@ -150,6 +150,7 @@ class AppContext:
         self._settings_lock = asyncio.Lock()
         self._battery_cfg = BatteryConfig()
         self._battery_wear_cost = max(0.0, float(self._settings.battery.wear_cost_eur_per_kwh))
+        self._apply_battery_settings_to_config()
         self._scheduler_task: Optional[asyncio.Task] = None
         self._training_task: Optional[asyncio.Task] = None
         self._manual_cycle_task: Optional[asyncio.Task] = None
@@ -554,34 +555,14 @@ class AppContext:
         }
 
     async def get_settings_payload(self) -> dict[str, Any]:
-        if not self._stat_catalog:
-            await self.refresh_statistics_catalog()
-        if not self._entity_catalog:
-            await self.refresh_entity_catalog()
         async with self._settings_lock:
             serialized = self._serialize_settings(self._settings)
-        serialized = await self._attach_recorder_status(serialized)
-        return {
-            "settings": serialized,
-            "statistics": list(self._stat_catalog),
-            "entities": list(self._entity_catalog),
-        }
+        return await self._build_settings_response(serialized)
 
     async def update_inverter_settings(self, data: Dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(data, dict):
-            raise ValueError("Payload must be an object")
+        payload = self._require_mapping(data)
         catalog = await self.refresh_statistics_catalog()
         catalog_map = {item.get("statistic_id"): item for item in catalog if item.get("statistic_id")}
-
-        def _supports_mean(meta: Optional[Dict[str, Any]]) -> bool:
-            if not meta:
-                return False
-            if meta.get("has_mean"):
-                return True
-            supported = meta.get("supported_statistics")
-            if isinstance(supported, list) and any(str(s).lower() == "mean" for s in supported):
-                return True
-            return False
 
         changed = False
         catalog_changed = False
@@ -592,14 +573,14 @@ class AppContext:
             def _apply(key: str, selection) -> None:
                 nonlocal changed
                 nonlocal catalog_changed
-                block = data.get(key)
+                block = payload.get(key)
                 if not isinstance(block, dict):
                     return
                 entity_id = block.get("entity_id") or selection.entity_id
                 meta = catalog_map.get(entity_id)
                 if not meta:
                     _LOGGER.warning("Recorder metadata missing for statistic '%s'", entity_id)
-                elif not _supports_mean(meta):
+                elif not self._meta_supports_mean(meta):
                     _LOGGER.warning("Statistic '%s' does not declare mean values; proceeding with best effort", entity_id)
                 if selection.entity_id != entity_id:
                     selection.entity_id = entity_id
@@ -614,8 +595,8 @@ class AppContext:
             _apply("house_consumption", inverter.house_consumption)
             _apply("pv_power", inverter.pv_power)
 
-            if "export_power_limited" in data:
-                flag = data.get("export_power_limited")
+            if "export_power_limited" in payload:
+                flag = payload.get("export_power_limited")
                 if isinstance(flag, str):
                     normalized = flag.strip().lower()
                     if normalized in {"true", "1", "yes", "on"}:
@@ -638,22 +619,14 @@ class AppContext:
                 save_settings(settings)
             serialized = self._serialize_settings(settings)
 
-        serialized = await self._attach_recorder_status(serialized)
-
-        if catalog_changed:
-            await self.refresh_statistics_catalog()
-            await self.refresh_entity_catalog()
-        elif not self._entity_catalog:
-            await self.refresh_entity_catalog()
-        return {
-            "settings": serialized,
-            "statistics": list(self._stat_catalog),
-            "entities": list(self._entity_catalog),
-        }
+        return await self._build_settings_response(
+            serialized,
+            refresh_stats=catalog_changed,
+            refresh_entities=catalog_changed,
+        )
 
     async def update_battery_settings(self, data: Dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(data, dict):
-            raise ValueError("Payload must be an object")
+        payload = self._require_mapping(data)
 
         entities = await self.refresh_entity_catalog()
         entity_map = {
@@ -665,8 +638,26 @@ class AppContext:
         changed = False
         async with self._settings_lock:
             battery = self._settings.battery
-            if "soc_sensor" in data:
-                block = data.get("soc_sensor")
+
+            def _parse_positive(name: str, raw_value: Any) -> float:
+                try:
+                    numeric = float(raw_value)
+                except (TypeError, ValueError):
+                    raise ValueError(f"{name} must be a positive number") from None
+                if not math.isfinite(numeric) or numeric <= 0:
+                    raise ValueError(f"{name} must be a positive number")
+                return numeric
+
+            def _parse_soc_fraction(name: str, raw_value: Any, *, minimum: float, maximum: float) -> float:
+                try:
+                    numeric = float(raw_value)
+                except (TypeError, ValueError):
+                    raise ValueError(f"{name} must be between {minimum} and {maximum}") from None
+                if not math.isfinite(numeric) or not (minimum <= numeric <= maximum):
+                    raise ValueError(f"{name} must be between {minimum} and {maximum}")
+                return numeric
+            if "soc_sensor" in payload:
+                block = payload.get("soc_sensor")
                 if block is None:
                     if battery.soc_sensor is not None:
                         battery.soc_sensor = None
@@ -692,8 +683,8 @@ class AppContext:
                 else:
                     raise ValueError("soc_sensor must be null or an object with entity_id")
 
-            if "wear_cost_eur_per_kwh" in data:
-                raw_cost = data.get("wear_cost_eur_per_kwh")
+            if "wear_cost_eur_per_kwh" in payload:
+                raw_cost = payload.get("wear_cost_eur_per_kwh")
                 try:
                     cost_value = float(raw_cost)
                 except (TypeError, ValueError):
@@ -704,31 +695,49 @@ class AppContext:
                     battery.wear_cost_eur_per_kwh = cost_value
                     changed = True
 
+            if "capacity_kwh" in payload:
+                cap_value = _parse_positive("capacity_kwh", payload.get("capacity_kwh"))
+                if not math.isclose(battery.capacity_kwh, cap_value, rel_tol=1e-9, abs_tol=1e-9):
+                    battery.capacity_kwh = cap_value
+                    changed = True
+
+            if "power_limit_kw" in payload:
+                power_value = _parse_positive("power_limit_kw", payload.get("power_limit_kw"))
+                if not math.isclose(battery.power_limit_kw, power_value, rel_tol=1e-9, abs_tol=1e-9):
+                    battery.power_limit_kw = power_value
+                    changed = True
+
+            soc_min_value = battery.soc_min
+            soc_max_value = battery.soc_max
+            if "soc_min" in payload:
+                soc_min_value = _parse_soc_fraction("soc_min", payload.get("soc_min"), minimum=0.0, maximum=0.98)
+            if "soc_max" in payload:
+                soc_max_value = _parse_soc_fraction("soc_max", payload.get("soc_max"), minimum=0.02, maximum=1.0)
+            if soc_max_value <= soc_min_value:
+                raise ValueError("soc_max must be greater than soc_min")
+            if not math.isclose(battery.soc_min, soc_min_value, rel_tol=1e-9, abs_tol=1e-9):
+                battery.soc_min = soc_min_value
+                changed = True
+            if not math.isclose(battery.soc_max, soc_max_value, rel_tol=1e-9, abs_tol=1e-9):
+                battery.soc_max = soc_max_value
+                changed = True
+
             self._battery_wear_cost = battery.wear_cost_eur_per_kwh
+            self._apply_battery_settings_to_config()
 
             if changed:
                 save_settings(self._settings)
             serialized = self._serialize_settings(self._settings)
 
-        if not self._stat_catalog:
-            await self.refresh_statistics_catalog()
-        if not self._entity_catalog:
-            await self.refresh_entity_catalog()
-        serialized = await self._attach_recorder_status(serialized)
-        return {
-            "settings": serialized,
-            "statistics": list(self._stat_catalog),
-            "entities": list(self._entity_catalog),
-        }
+        return await self._build_settings_response(serialized)
 
     async def update_pricing_settings(self, data: Dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(data, dict):
-            raise ValueError("Payload must be an object")
+        payload = self._require_mapping(data)
 
         changed = False
         async with self._settings_lock:
             current_pricing = self._settings.pricing
-            new_pricing = coerce_pricing_payload(data, current_pricing)
+            new_pricing = coerce_pricing_payload(payload, current_pricing)
             if current_pricing != new_pricing:
                 self._settings.pricing = new_pricing
                 changed = True
@@ -736,16 +745,7 @@ class AppContext:
                 save_settings(self._settings)
             serialized = self._serialize_settings(self._settings)
 
-        if not self._stat_catalog:
-            await self.refresh_statistics_catalog()
-        if not self._entity_catalog:
-            await self.refresh_entity_catalog()
-        serialized = await self._attach_recorder_status(serialized)
-        return {
-            "settings": serialized,
-            "statistics": list(self._stat_catalog),
-            "entities": list(self._entity_catalog),
-        }
+        return await self._build_settings_response(serialized)
 
     async def refresh_statistics_catalog(self) -> List[Dict[str, Any]]:
         try:
@@ -839,6 +839,27 @@ class AppContext:
             if changed:
                 save_settings(settings)
 
+    def _apply_battery_settings_to_config(self) -> None:
+        battery = self._settings.battery
+        cap = float(battery.capacity_kwh) if battery.capacity_kwh is not None else 0.0
+        power = float(battery.power_limit_kw) if battery.power_limit_kw is not None else 0.0
+        self._battery_cfg.cap_kwh = max(0.1, cap)
+        self._battery_cfg.p_max_kw = max(0.1, power)
+        try:
+            soc_min = float(battery.soc_min)
+        except (TypeError, ValueError):
+            soc_min = 0.1
+        try:
+            soc_max = float(battery.soc_max)
+        except (TypeError, ValueError):
+            soc_max = 0.9
+        soc_min = float(np.clip(soc_min, 0.0, 0.95))
+        soc_max = float(np.clip(soc_max, soc_min + 0.01, 1.0))
+        if soc_max <= soc_min:
+            soc_max = min(1.0, soc_min + 0.05)
+        self._battery_cfg.soc_min = soc_min
+        self._battery_cfg.soc_max = soc_max
+
     @staticmethod
     def _meta_supports_mean(meta: Optional[Dict[str, Any]]) -> bool:
         if not meta:
@@ -849,6 +870,12 @@ class AppContext:
         if isinstance(supported, list) and any(str(item).lower() == "mean" for item in supported):
             return True
         return False
+
+    @staticmethod
+    def _require_mapping(value: Any, label: str = "Payload") -> Dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        raise ValueError(f"{label} must be an object")
 
     async def _ensure_statistic_metadata(self, stat_id: Optional[str], unit: Optional[str]) -> Optional[Dict[str, Any]]:
         if not stat_id:
@@ -861,6 +888,24 @@ class AppContext:
             self._stat_catalog.append(probe)
             return probe
         return None
+
+    async def _build_settings_response(
+        self,
+        serialized: dict[str, Any],
+        *,
+        refresh_stats: bool = False,
+        refresh_entities: bool = False,
+    ) -> dict[str, Any]:
+        if refresh_stats or not self._stat_catalog:
+            await self.refresh_statistics_catalog()
+        if refresh_entities or not self._entity_catalog:
+            await self.refresh_entity_catalog()
+        serialized = await self._attach_recorder_status(serialized)
+        return {
+            "settings": serialized,
+            "statistics": list(self._stat_catalog),
+            "entities": list(self._entity_catalog),
+        }
 
     async def _attach_recorder_status(self, serialized: dict[str, Any]) -> dict[str, Any]:
         inverter = serialized.get("inverter")
@@ -932,6 +977,10 @@ class AppContext:
         else:
             battery_block = {"soc_sensor": None}
         battery_block["wear_cost_eur_per_kwh"] = float(battery.wear_cost_eur_per_kwh)
+        battery_block["capacity_kwh"] = float(battery.capacity_kwh)
+        battery_block["power_limit_kw"] = float(battery.power_limit_kw)
+        battery_block["soc_min"] = float(battery.soc_min)
+        battery_block["soc_max"] = float(battery.soc_max)
         pricing = settings.pricing
         return {
             "inverter": {
