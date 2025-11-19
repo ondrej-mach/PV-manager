@@ -116,18 +116,11 @@ def run_prediction_pipeline(
     # Fetch recent HA data for lags at 5-min resolution if available
     ENTITIES = entities or [("sensor.house_consumption", "mean"), ("sensor.pv_power", "mean")]
 
-    # For lags we need at least 72 hours of history
     timings: Dict[str, float] = {}
 
     t0 = time.perf_counter()
-    history_hours = max(72, horizon_hours + 72)
-    ha_recent_raw = ha.fetch_history_hours_sync(ENTITIES, hours=history_hours, period="5minute")
-    if ha_recent_raw.empty or not list(ha_recent_raw.columns):
-        _LOGGER.warning(
-            "Home Assistant history returned no data for %s; falling back to hourly statistics.",
-            [entity for entity, _stat in ENTITIES],
-        )
-        ha_recent_raw = ha.fetch_last_hours_sync(ENTITIES, hours=history_hours, period="hour")
+    history_hours = 48
+    ha_recent_raw = ha.fetch_history_sync(ENTITIES, hours=history_hours, period="5minute")
     timings["ha_fetch"] = time.perf_counter() - t0
     _dump_debug_frame(debug_path, "ha_recent_raw", ha_recent_raw)
 

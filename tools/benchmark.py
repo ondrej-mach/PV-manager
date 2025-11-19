@@ -503,7 +503,7 @@ def main():
         token = None
         url = None
 
-    ha = HomeAssistant(token=token, url=url)
+    ha = HomeAssistant(token=token, ws_url=url)
 
     try:
         lat, lon, tz = ha.get_location(FALLBACK_LAT, FALLBACK_LON, FALLBACK_TZ)

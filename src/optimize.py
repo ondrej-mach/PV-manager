@@ -66,7 +66,7 @@ def main():
         token = None
         url = None
 
-    ha = HomeAssistant(token=token, url=url)
+    ha = HomeAssistant(token=token, ws_url=url)
     stat_ids, rename_map, scales = _load_inverter_config()
     active_entities = stat_ids or DEFAULT_ENTITIES
 

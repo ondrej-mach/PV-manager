@@ -67,12 +67,12 @@ def main():
         token = None
         url = None
 
-    ha = HomeAssistant(token=token, url=url)
+    ha = HomeAssistant(token=token, ws_url=url)
     stat_ids, rename_map, scales = _load_inverter_config()
     active_entities = stat_ids or DEFAULT_ENTITIES
 
     logger.info("Current environment:")
-    logger.info("HASS_WS_URL: %s", ha.url)
+    logger.info("HASS_WS_URL: %s", ha.ws_url)
     logger.info("Using token: %s", "supervisor" if os.getenv("SUPERVISOR_TOKEN") else "custom")
     logger.info("Using HA sensors: %s", active_entities)
 

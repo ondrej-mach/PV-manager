@@ -4,9 +4,11 @@ import json
 import asyncio
 import threading
 import logging
+import requests
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 from typing import List, Tuple, Optional, Dict, Any, Union
+from urllib.parse import urljoin
 
 import pandas as pd
 import websockets
@@ -22,7 +24,7 @@ class HomeAssistant:
     def __init__(
         self,
         token: Optional[str] = None,
-        url: Optional[str] = None,
+        instance_url: Optional[str] = None,
     ):
         """Initialize Home Assistant connection manager.
 
@@ -31,10 +33,11 @@ class HomeAssistant:
             url: WebSocket URL. Defaults to supervisor WebSocket URL.
         """
         self.token = token or os.getenv("SUPERVISOR_TOKEN")
-        self.url = url or os.getenv("HASS_WS_URL") or "ws://supervisor/core/websocket"
+        self.ws_url = urljoin(instance_url.replace("http", "ws", 1), "/api/websocket") if instance_url else "ws://supervisor/core/websocket"
+        self.rest_url = urljoin(instance_url, "/api") if instance_url else "http://supervisor/core/api"
         self._ws: Optional[WebSocketClientProtocol] = None
         self._msg_id = 1
-        # Background loop and thread for sync façade (persistent connection)
+        # Background loop and thread for sync facade (persistent connection)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._cached_config: Optional[Dict[str, Any]] = None
@@ -69,16 +72,6 @@ class HomeAssistant:
         return mapping.get(normalized, period or "1h")
 
     @staticmethod
-    def _coerce_entity_ids(entities: List[Union[str, Tuple[str, str]]]) -> List[str]:
-        ids: List[str] = []
-        for item in entities:
-            if isinstance(item, str) and item:
-                ids.append(item)
-            elif isinstance(item, (list, tuple)) and item and isinstance(item[0], str):
-                ids.append(item[0])
-        return ids
-
-    @staticmethod
     def _normalize_entities_with_types(entities: List[Union[str, Tuple[str, str]]]) -> List[Tuple[str, str]]:
         normalized: List[Tuple[str, str]] = []
         for item in entities:
@@ -95,7 +88,13 @@ class HomeAssistant:
         return normalized
 
     @staticmethod
-    def _normalize_history_payload(payload: Any) -> Dict[str, List[Dict[str, Any]]]:
+    def _normalize_history_response(resp: Any) -> Dict[str, List[Dict[str, Any]]]:
+        payload = resp
+        if isinstance(payload, dict):
+            if payload.get("success") is False:
+                return {}
+            payload = payload.get("result", payload.get("response", payload))
+
         by_entity: Dict[str, List[Dict[str, Any]]] = {}
         if isinstance(payload, list):
             for bucket in payload:
@@ -109,15 +108,6 @@ class HomeAssistant:
                 if entity_id:
                     by_entity[entity_id] = [row for row in bucket if isinstance(row, dict)]
         return by_entity
-
-    @staticmethod
-    def _normalize_history_response(resp: Any) -> Dict[str, List[Dict[str, Any]]]:
-        payload = resp
-        if isinstance(payload, dict):
-            if payload.get("success") is False:
-                return {}
-            payload = payload.get("result", payload.get("response", payload))
-        return HomeAssistant._normalize_history_payload(payload)
 
     async def _fetch_history_statistics_window_async(
         self,
@@ -303,7 +293,7 @@ class HomeAssistant:
             if not self.token:
                 raise RuntimeError("No authentication token available")
 
-            ws = await websockets.connect(self.url)
+            ws = await websockets.connect(self.ws_url)
             await ws.recv()  # auth required message
             await ws.send(json.dumps({"type": "auth", "access_token": self.token}))
             auth_resp = json.loads(await ws.recv())
@@ -650,6 +640,94 @@ class HomeAssistant:
             return fut.result()
         return asyncio.run(self.fetch_statistics_window_async(entities_with_types, start_time, end_time, period))
 
+    def fetch_history_sync(
+        self,
+        entities_with_types: List[Tuple[str, str]],
+        hours: int = 24,
+        period: str = "5minute",
+    ) -> pd.DataFrame:
+        """Fetch recent entity history via the REST API and resample to the requested period."""
+        normalized = self._normalize_entities_with_types(entities_with_types)
+        entity_ids = [entity for entity, _typ in normalized]
+        if not entity_ids:
+            return pd.DataFrame()
+
+        if not self.token:
+            raise RuntimeError("No authentication token available for history fetch")
+
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(hours=max(1, int(hours or 24)))
+        freq = self._period_to_freq(period)
+        timeline = pd.date_range(start=start_time, end=end_time, freq=freq, tz=timezone.utc)
+        history_url = f"{self.rest_url.rstrip('/')}/history/period/{start_time.isoformat()}"
+        params = {
+            "filter_entity_id": ",".join(entity_ids),
+            "minimal_response": "true",
+            "end_time": end_time.isoformat(),
+        }
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            resp = requests.get(history_url, headers=headers, params=params, timeout=30)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:
+            _LOGGER.error("Failed to download Home Assistant history: %s", exc)
+            raise
+
+        history_map = self._normalize_history_response(payload)
+
+        # Build unified rows list (entity_id, state, timestamp)
+        rows = []
+        for ent in entity_ids:
+            ent_rows = history_map.get(ent, [])
+            for item in ent_rows:
+                ts = item.get("last_changed") or item.get("last_updated") or item.get("time")
+                rows.append({"entity_id": ent, "state": item.get("state"), "timestamp": ts})
+
+        if not rows:
+            return pd.DataFrame(index=timeline)
+
+        df = pd.DataFrame(rows)
+        # normalize types similar to tools/get_history.py example
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+        df = df.dropna(subset=["timestamp"])  # drop rows without valid timestamp
+        if df.empty:
+            return pd.DataFrame(index=timeline)
+
+        # Prefer numeric states where possible; non-numeric become NaN
+        df["state"] = pd.to_numeric(df["state"], errors="coerce")
+
+        # Pivot so each entity is a column with timestamp index
+        df_pivot = (
+            df.pivot_table(index="timestamp", columns="entity_id", values="state", aggfunc="mean")
+            .sort_index()
+        )
+
+        if df_pivot.empty:
+            return pd.DataFrame(index=timeline)
+
+        # Use the requested timeline as target bins (already tz-aware)
+        bins = timeline
+        left = pd.DataFrame({"timestamp": bins})
+
+        # For each entity, pick the latest reading <= bin timestamp using merge_asof
+        out_df = pd.DataFrame(index=bins, columns=df_pivot.columns, dtype=float)
+        for col in df_pivot.columns:
+            ser = df_pivot[col].dropna().reset_index()
+            if ser.empty:
+                continue
+            ser.columns = ["timestamp", "value"]
+            ser = ser.sort_values("timestamp")
+            merged = pd.merge_asof(left, ser, on="timestamp", direction="backward")
+            out_df[col] = merged["value"].values
+
+        # If no values available at all for a column, it'll remain NaN; caller can ffill if desired
+        return out_df
+
     def fetch_statistics_sync(
         self,
         entities_with_types: List[Tuple[str, str]],
@@ -667,184 +745,7 @@ class HomeAssistant:
             return fut.result()
         return asyncio.run(self.fetch_statistics_async(entities_with_types, days, chunk_days))
 
-    async def fetch_history_window_async(
-        self,
-        entities: List[Union[str, Tuple[str, str]]],
-        start_time: datetime,
-        end_time: datetime,
-        *,
-        period: str = "5minute",
-        minimal_response: bool = True,
-        significant_changes_only: bool = False,
-        chunk_hours: int = 24,
-    ) -> pd.DataFrame:
-        """Fetch recent history data using the History API, falling back to raw state replay."""
-        normalized_entities = self._normalize_entities_with_types(entities)
-        if not normalized_entities:
-            return pd.DataFrame()
 
-        start_utc = self._ensure_utc(start_time)
-        end_utc = self._ensure_utc(end_time)
-        if start_utc >= end_utc:
-            return pd.DataFrame()
-
-        freq = self._period_to_freq(period)
-        try:
-            timeline = pd.date_range(start=start_utc, end=end_utc, freq=freq)
-        except ValueError:
-            freq = "5min"
-            timeline = pd.date_range(start=start_utc, end=end_utc, freq=freq)
-        if len(timeline) == 0:
-            freq = freq or "5min"
-            timeline = pd.date_range(start=start_utc, periods=2, freq=freq)
-
-        # Prefer the built-in history statistics endpoint if available.
-        if self._history_stats_supported is not False:
-            try:
-                stats_df = await self._fetch_history_statistics_window_async(
-                    normalized_entities,
-                    start_utc,
-                    end_utc,
-                    period=period,
-                    chunk_hours=chunk_hours,
-                )
-                if not stats_df.empty:
-                    self._history_stats_supported = True
-                    return stats_df
-            except Exception as exc:
-                _LOGGER.debug("history statistics endpoint failed; falling back to raw history: %s", exc)
-                self._history_stats_supported = False
-
-        return await self._fetch_history_states_window_async(
-            normalized_entities,
-            timeline,
-            freq,
-            start_utc,
-            end_utc,
-            minimal_response=minimal_response,
-            significant_changes_only=significant_changes_only,
-            chunk_hours=chunk_hours,
-        )
-
-    def fetch_history_window(
-        self,
-        entities: List[Union[str, Tuple[str, str]]],
-        start_time: datetime,
-        end_time: datetime,
-        *,
-        period: str = "5minute",
-        minimal_response: bool = True,
-        significant_changes_only: bool = False,
-        chunk_hours: int = 24,
-    ) -> pd.DataFrame:
-        if self._loop:
-            fut = asyncio.run_coroutine_threadsafe(
-                self.fetch_history_window_async(
-                    entities,
-                    start_time,
-                    end_time,
-                    period=period,
-                    minimal_response=minimal_response,
-                    significant_changes_only=significant_changes_only,
-                    chunk_hours=chunk_hours,
-                ),
-                self._loop,
-            )
-            return fut.result()
-        return asyncio.run(
-            self.fetch_history_window_async(
-                entities,
-                start_time,
-                end_time,
-                period=period,
-                minimal_response=minimal_response,
-                significant_changes_only=significant_changes_only,
-                chunk_hours=chunk_hours,
-            )
-        )
-
-    def fetch_history_hours_sync(
-        self,
-        entities: List[Union[str, Tuple[str, str]]],
-        hours: int,
-        *,
-        period: str = "5minute",
-        minimal_response: bool = True,
-        significant_changes_only: bool = False,
-        chunk_hours: int = 24,
-    ) -> pd.DataFrame:
-        """Convenience wrapper to fetch history for the last N hours."""
-        if hours <= 0:
-            return pd.DataFrame()
-        end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(hours=hours)
-        return self.fetch_history_window(
-            entities,
-            start_time,
-            end_time,
-            period=period,
-            minimal_response=minimal_response,
-            significant_changes_only=significant_changes_only,
-            chunk_hours=chunk_hours,
-        )
-
-    async def _fetch_history_states_window_async(
-        self,
-        entities_with_types: List[Tuple[str, str]],
-        timeline: pd.DatetimeIndex,
-        freq: str,
-        start_utc: datetime,
-        end_utc: datetime,
-        *,
-        minimal_response: bool,
-        significant_changes_only: bool,
-        chunk_hours: int,
-    ) -> pd.DataFrame:
-        entity_ids = [entity for entity, _ in entities_with_types]
-        entity_info_map = await self._get_entity_info_map(entity_ids)
-
-        chunk_hours = max(1, int(chunk_hours))
-        aggregated: Dict[str, List[Dict[str, Any]]] = {entity_id: [] for entity_id in entity_ids}
-        cursor = start_utc
-        while cursor < end_utc:
-            chunk_end = min(cursor + timedelta(hours=chunk_hours), end_utc)
-            req = {
-                "type": "history/history_during_period",
-                "start_time": cursor.isoformat(),
-                "end_time": chunk_end.isoformat(),
-                "entity_ids": entity_ids,
-                "minimal_response": minimal_response,
-                "significant_changes_only": significant_changes_only,
-                "no_attributes": True,
-            }
-
-            resp = await self._send_message(req)
-            history = self._normalize_history_response(resp)
-            for entity_id in entity_ids:
-                rows = history.get(entity_id)
-                if rows:
-                    aggregated[entity_id].extend(rows)
-            cursor = chunk_end
-
-        series_frames = []
-        for entity_id in entity_ids:
-            series = self._history_rows_to_series(
-                aggregated.get(entity_id, []),
-                timeline,
-                freq,
-                entity_id,
-                entity_info_map.get(entity_id),
-            )
-            if series.isna().all():
-                continue
-            series_frames.append(series.rename(entity_id))
-
-        if not series_frames:
-            return pd.DataFrame(index=timeline)
-
-        frame = pd.concat(series_frames, axis=1)
-        frame.index.name = "timestamp"
-        return frame
 
     # --- Background loop management and sync helpers ---
     def _start_background_loop(self) -> None:
@@ -886,9 +787,6 @@ class HomeAssistant:
         
         Call this when shutting down the addon or when you're done with all operations.
         """
-        if not self._ws:
-            return
-
         try:
             await self._ws.close()
         except Exception:

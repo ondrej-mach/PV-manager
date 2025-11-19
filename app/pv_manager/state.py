@@ -223,7 +223,8 @@ class AppContext:
             return
 
         def _init() -> tuple[HomeAssistant, float, float, str, Optional[str]]:
-            ha = HomeAssistant()
+            hass_server = os.getenv("HASS_SERVER")
+            ha = HomeAssistant(instance_url=hass_server)
             ha.connect_sync()
             lat, lon, tz = ha.get_location()
             try:
