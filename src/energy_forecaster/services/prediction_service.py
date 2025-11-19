@@ -120,7 +120,8 @@ def run_prediction_pipeline(
     timings: Dict[str, float] = {}
 
     t0 = time.perf_counter()
-    history_hours = 48
+    max_consumption_lag_hours = 72  # house features rely on 24/48/72h consumption lags
+    history_hours = max(max_consumption_lag_hours * 2, max_consumption_lag_hours + horizon_hours)
     ha_recent_raw = ha.fetch_history_sync(ENTITIES, hours=history_hours, period="15minute")
     timings["ha_fetch"] = time.perf_counter() - t0
     _dump_debug_frame(debug_path, "ha_recent_raw", ha_recent_raw)
