@@ -385,8 +385,9 @@ class HomeAssistant:
         entities_with_types: List[Tuple[str, str]],
         days: int,
         chunk_days: int = 30,
+        period: str = "hour",
     ) -> pd.DataFrame:
-        """Fetch hourly statistics for multiple entities from Home Assistant."""
+        """Fetch recorder statistics for multiple entities from Home Assistant."""
         days = min(days, 730)  # Limit to 2 years of data
         end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(days=days)
@@ -413,7 +414,7 @@ class HomeAssistant:
                     "service": "get_statistics",
                     "service_data": {
                         "statistic_ids": entities,
-                        "period": "hour",
+                        "period": period,
                         "start_time": chunk_start.isoformat(),
                         "end_time": chunk_end.isoformat(),
                         "types": requested_types,
@@ -671,9 +672,9 @@ class HomeAssistant:
         }
 
         try:
-            resp = requests.get(history_url, headers=headers, params=params, timeout=30)
-            resp.raise_for_status()
-            payload = resp.json()
+            with requests.get(history_url, headers=headers, params=params, timeout=30) as resp:
+                resp.raise_for_status()
+                payload = resp.json()
         except Exception as exc:
             _LOGGER.error("Failed to download Home Assistant history: %s", exc)
             raise
@@ -733,6 +734,7 @@ class HomeAssistant:
         entities_with_types: List[Tuple[str, str]],
         days: int,
         chunk_days: int = 30,
+        period: str = "hour",
     ) -> pd.DataFrame:
         """Synchronous wrapper for fetch_statistics_async."""
         # Preferred: run the async method on the background loop that is kept
@@ -740,10 +742,10 @@ class HomeAssistant:
         # active, fall back to running it with asyncio.run (short-lived loop).
         if self._loop:
             fut = asyncio.run_coroutine_threadsafe(
-                self.fetch_statistics_async(entities_with_types, days, chunk_days), self._loop
+                self.fetch_statistics_async(entities_with_types, days, chunk_days, period), self._loop
             )
             return fut.result()
-        return asyncio.run(self.fetch_statistics_async(entities_with_types, days, chunk_days))
+        return asyncio.run(self.fetch_statistics_async(entities_with_types, days, chunk_days, period))
 
 
 

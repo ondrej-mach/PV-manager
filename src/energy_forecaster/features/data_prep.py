@@ -1,7 +1,7 @@
 
 import numpy as np
 import pandas as pd
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 WEATHER_FEATURES: List[str] = [
     "relative_humidity_2m",
@@ -42,6 +42,7 @@ TIME_FEATURES: List[str] = [
 
 TARGET_COL = "power_consumption_kw"
 PV_COL = "pv_power_kw"
+DEFAULT_INTERVAL_MINUTES = 15
 
 DEFAULT_RENAME_MAP = {"sensor.house_consumption": TARGET_COL, "sensor.pv_power": PV_COL}
 DEFAULT_SCALES = {TARGET_COL: 0.001, PV_COL: 0.001}
@@ -78,24 +79,43 @@ def add_hdd_cdd_temp_sq(df: pd.DataFrame, base_c: float=18.0) -> pd.DataFrame:
     out["temp_sq"] = T**2
     return out
 
-def add_consumption_lags(df: pd.DataFrame, lags=(24,48,72)) -> pd.DataFrame:
+def _steps_per_hour(freq_minutes: int) -> int:
+    freq_minutes = max(1, int(freq_minutes))
+    return max(1, int(round(60 / freq_minutes)))
+
+
+def add_consumption_lags(
+    df: pd.DataFrame,
+    lag_hours: Tuple[int, ...] = (24, 48, 72),
+    freq_minutes: int = DEFAULT_INTERVAL_MINUTES,
+) -> pd.DataFrame:
     out = df.copy()
-    for L in lags:
-        out[f"house_consumption_lag{L}"] = out[TARGET_COL].shift(L)
+    sph = _steps_per_hour(freq_minutes)
+    for hours in lag_hours:
+        shift_steps = hours * sph
+        out[f"house_consumption_lag{hours}"] = out[TARGET_COL].shift(shift_steps)
     return out
 
-def add_pv_lags(df: pd.DataFrame, lags=(24,)) -> pd.DataFrame:
+
+def add_pv_lags(
+    df: pd.DataFrame,
+    lag_hours: Tuple[int, ...] = (24,),
+    freq_minutes: int = DEFAULT_INTERVAL_MINUTES,
+) -> pd.DataFrame:
     out = df.copy()
-    for L in lags:
-        out[f"pv_power_lag{L}"] = out[PV_COL].shift(L)
+    sph = _steps_per_hour(freq_minutes)
+    for hours in lag_hours:
+        shift_steps = hours * sph
+        out[f"pv_power_lag{hours}"] = out[PV_COL].shift(shift_steps)
     return out
 
 def normalize_ha(
     df: pd.DataFrame,
     rename: Dict[str, str],
     scales: Optional[Dict[str, float]] = None,
+    freq_minutes: int = DEFAULT_INTERVAL_MINUTES,
 ) -> pd.DataFrame:
-    """Normalize HA data: rename columns, resample to hourly, convert using provided scales."""
+    """Normalize HA data: rename columns, resample to the requested interval, convert using provided scales."""
     out = df.rename(columns=rename)
 
     # Guard against empty frames coming back with a RangeIndex when Home Assistant has no data yet.
@@ -113,7 +133,16 @@ def normalize_ha(
             out.index = coerced_index
 
     out = out.sort_index()
-    out = out.resample("h").mean()
+    freq_minutes = max(1, int(freq_minutes))
+    target_rule = f"{freq_minutes}min"
+    resampled = out.resample(target_rule).mean()
+    if len(out.index) >= 2:
+        src_minutes = int((out.index[1] - out.index[0]).total_seconds() / 60)
+    else:
+        src_minutes = freq_minutes
+    if freq_minutes < src_minutes:
+        resampled = resampled.interpolate(method="time")
+    out = resampled.ffill().bfill()
     scales = scales or {}
     for c, factor in scales.items():
         if c in out.columns:
@@ -133,9 +162,10 @@ def assemble_training_frames(
     tz: str = "Europe/Prague",
     rename_map: Optional[Dict[str, str]] = None,
     scales: Optional[Dict[str, float]] = None,
+    freq_minutes: int = DEFAULT_INTERVAL_MINUTES,
 ) -> Dict[str, pd.DataFrame]:
     rename = rename_map or DEFAULT_RENAME_MAP
-    ha = normalize_ha(ha_raw, rename=rename, scales=scales or DEFAULT_SCALES)
+    ha = normalize_ha(ha_raw, rename=rename, scales=scales or DEFAULT_SCALES, freq_minutes=freq_minutes)
     missing_required = [col for col in (TARGET_COL, PV_COL) if col not in ha.columns]
     if missing_required:
         available = list(ha.columns)
@@ -144,11 +174,11 @@ def assemble_training_frames(
             f"{missing_required}. Available columns after renaming: {available}. "
             f"Rename map in effect: {rename}."
         )
-    wx_aligned = wx.reindex(ha.index).ffill()
+    wx_aligned = wx.reindex(ha.index).ffill().bfill()
     base = pd.concat([ha, wx_aligned], axis=1)
     base = add_hdd_cdd_temp_sq(base)
     base = add_time_features(base, tz=tz)
-    house = add_consumption_lags(base, lags=(24,48,72))
+    house = add_consumption_lags(base, lag_hours=(24,48,72), freq_minutes=freq_minutes)
     house_feats = [
         "relative_humidity_2m","dew_point_2m","rain","precipitation","snowfall",
         "snow_depth","cloud_cover","weather_code","pressure_msl",
@@ -160,7 +190,7 @@ def assemble_training_frames(
         "HDD","CDD","temp_sq",
     ]
     house_train = house[house_feats + [TARGET_COL]].dropna()
-    pv = add_pv_lags(base, lags=(24,))
+    pv = add_pv_lags(base, lag_hours=(24,), freq_minutes=freq_minutes)
     pv_feats = [
         "relative_humidity_2m","dew_point_2m","rain","precipitation","snowfall",
         "snow_depth","cloud_cover","weather_code","pressure_msl",
@@ -180,6 +210,7 @@ def assemble_forecast_features(
     tz: str = "Europe/Prague",
     rename_map: Optional[Dict[str, str]] = None,
     scales: Optional[Dict[str, float]] = None,
+    freq_minutes: int = DEFAULT_INTERVAL_MINUTES,
 ) -> Dict[str, pd.DataFrame]:
     """Build feature matrices for forecasting using recent HA history and future weather.
 
@@ -190,7 +221,7 @@ def assemble_forecast_features(
     Note: Lags are computed in hours from the recent history, mapped to the future timeline.
     """
     rename = rename_map or DEFAULT_RENAME_MAP
-    ha = normalize_ha(ha_recent, rename=rename, scales=scales or DEFAULT_SCALES)
+    ha = normalize_ha(ha_recent, rename=rename, scales=scales or DEFAULT_SCALES, freq_minutes=freq_minutes)
     missing_required = [col for col in (TARGET_COL, PV_COL) if col not in ha.columns]
     if missing_required:
         available = list(ha.columns)

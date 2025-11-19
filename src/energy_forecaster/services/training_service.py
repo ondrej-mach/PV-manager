@@ -12,7 +12,11 @@ from joblib import dump
 
 from energy_forecaster.io.home_assistant import HomeAssistant
 from energy_forecaster.io.open_meteo import fetch_openmeteo_archive
-from energy_forecaster.features.data_prep import assemble_training_frames, TARGET_COL, PV_COL
+from energy_forecaster.features.data_prep import (
+    assemble_training_frames,
+    TARGET_COL,
+    PV_COL,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -73,11 +77,14 @@ def run_training_pipeline(
     ha: Optional[HomeAssistant] = None,
     rename_map: Optional[Dict[str, str]] = None,
     scales: Optional[Dict[str, float]] = None,
+    freq_minutes: int = 60,
 ) -> Dict[str, Any]:
     logger.info("[TRAIN] Fetching Home Assistant statistics…")
     if ha is None:
         ha = HomeAssistant()  # Use default supervisor connection if none provided
-    ha_raw = ha.fetch_statistics_sync(stat_ids, days=lookback_days, chunk_days=30)
+    freq_minutes = max(1, int(freq_minutes))
+    stats_period = "hour"
+    ha_raw = ha.fetch_statistics_sync(stat_ids, days=lookback_days, chunk_days=30, period=stats_period)
     if ha_raw.empty:
         raise RuntimeError("No HA statistics returned.")
 
@@ -87,7 +94,7 @@ def run_training_pipeline(
     logger.info("[TRAIN] HA stats window: %s -> %s", start, end)
 
     logger.info("[TRAIN] Fetching weather archive from Open-Meteo…")
-    wx = fetch_openmeteo_archive(start, end, lat=lat, lon=lon, tz=tz)
+    wx = fetch_openmeteo_archive(start, end, lat=lat, lon=lon, tz=tz, interval_minutes=freq_minutes)
     logger.info(
         "[TRAIN] Weather data: rows=%s cols=%s window=%s -> %s",
         len(wx),
@@ -97,7 +104,14 @@ def run_training_pipeline(
     )
 
     logger.info("[TRAIN] Assembling training frames and computing features…")
-    frames = assemble_training_frames(ha_raw, wx, tz=tz, rename_map=rename_map, scales=scales)
+    frames = assemble_training_frames(
+        ha_raw,
+        wx,
+        tz=tz,
+        rename_map=rename_map,
+        scales=scales,
+        freq_minutes=freq_minutes,
+    )
     df_house = frames["house"]
     df_pv    = frames["pv"]
     logger.info("[TRAIN] After feature engineering: house=%s pv=%s", df_house.shape, df_pv.shape)

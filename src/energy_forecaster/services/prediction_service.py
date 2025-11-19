@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
+import math
 import os
 import time
 import logging
@@ -113,37 +114,34 @@ def run_prediction_pipeline(
     """
     debug_path = _prepare_debug_path(debug_dir)
 
-    # Fetch recent HA data for lags at 5-min resolution if available
+    # Fetch recent HA data for lags at high resolution
     ENTITIES = entities or [("sensor.house_consumption", "mean"), ("sensor.pv_power", "mean")]
 
     timings: Dict[str, float] = {}
 
     t0 = time.perf_counter()
     history_hours = 48
-    ha_recent_raw = ha.fetch_history_sync(ENTITIES, hours=history_hours, period="5minute")
+    ha_recent_raw = ha.fetch_history_sync(ENTITIES, hours=history_hours, period="15minute")
     timings["ha_fetch"] = time.perf_counter() - t0
     _dump_debug_frame(debug_path, "ha_recent_raw", ha_recent_raw)
 
-    # Weather forecast (hourly) for the horizon
+    # Weather forecast (interpolated to requested interval) for the horizon
     t0 = time.perf_counter()
-    wx_forecast = fetch_openmeteo_forecast(lat=lat, lon=lon, tz=tz, hours=horizon_hours, use_mock=use_mock_weather)
+    wx_forecast = fetch_openmeteo_forecast(
+        lat=lat,
+        lon=lon,
+        tz=tz,
+        hours=horizon_hours,
+        use_mock=use_mock_weather,
+        interval_minutes=interval_minutes,
+    )
     timings["wx_fetch"] = time.perf_counter() - t0
-    _dump_debug_frame(debug_path, "weather_forecast_hourly", wx_forecast)
+    _dump_debug_frame(debug_path, "weather_forecast_raw", wx_forecast)
 
-    # Upsample weather to match requested interval
-    if interval_minutes < 60:
-        # Create 15-min timeline
-        periods = (horizon_hours * 60) // interval_minutes
-        future_index = pd.date_range(
-            start=wx_forecast.index[0],
-            periods=periods,
-            freq=f"{interval_minutes}min"
-        )
-        # Interpolate weather linearly to 15-min
-        wx_upsampled = wx_forecast.reindex(future_index).interpolate(method="linear")
-    else:
-        wx_upsampled = wx_forecast
-        future_index = wx_forecast.index
+    target_freq = f"{interval_minutes}min"
+    periods = max(1, math.ceil((horizon_hours * 60) / max(1, interval_minutes)))
+    future_index = pd.date_range(start=wx_forecast.index[0], periods=periods, freq=target_freq)
+    wx_upsampled = wx_forecast.reindex(future_index).interpolate(method="time").ffill().bfill()
 
     _dump_debug_frame(debug_path, "weather_forecast_resampled", wx_upsampled)
 
@@ -155,6 +153,7 @@ def run_prediction_pipeline(
         tz=tz,
         rename_map=rename_map,
         scales=scales,
+        freq_minutes=interval_minutes,
     )
     timings["feature_build"] = time.perf_counter() - t0
     pv_X = feats["pv_X"]

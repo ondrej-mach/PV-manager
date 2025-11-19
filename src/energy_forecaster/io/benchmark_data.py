@@ -53,8 +53,9 @@ def download_benchmark_data(
         # Fetch async
         import asyncio
         ha_data = asyncio.run(
-            ha.fetch_statistics_window_async(ENTITIES, start_ts, end_ts, period="hour")
+            ha.fetch_statistics_window_async(ENTITIES, start_ts, end_ts, period="5minute")
         )
+        ha_data = ha_data.sort_index().resample("15min").mean().interpolate(method="time").ffill().bfill()
         ha_data.to_csv(ha_path)
         logger.info("[BENCH] Saved HA stats to %s", ha_path)
     else:
@@ -65,7 +66,7 @@ def download_benchmark_data(
         logger.info("[BENCH] Downloading weather from %s to %s…", start, end)
         start_ts = pd.Timestamp(start, tz=tz)
         end_ts = pd.Timestamp(end, tz=tz)
-        wx_data = fetch_openmeteo_archive(start_ts, end_ts, lat, lon, tz)
+        wx_data = fetch_openmeteo_archive(start_ts, end_ts, lat, lon, tz, interval_minutes=15)
         wx_data.to_csv(wx_path)
         logger.info("[BENCH] Saved weather to %s", wx_path)
     else:
