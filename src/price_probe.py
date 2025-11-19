@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import pandas as pd
@@ -7,6 +8,11 @@ if src_path not in sys.path:
     sys.path.append(src_path)
 
 from energy_forecaster.io.entsoe import fetch_day_ahead_prices_country, guess_country_code_from_tz
+from energy_forecaster.utils.logging_config import configure_logging
+
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -22,15 +28,22 @@ def main():
     except Exception as e:
         # Avoid printing the full URL or token; provide high-level diagnostics only
         msg = str(e)
-        print("[ENTSOE] Price fetch failed:", msg)
-        print("Hint: Ensure the token file exists at ENTSOE_TOKEN_PATH (default /home/ondra/Documents/VUT/DIP/data/ENTSO-E_token.txt) and the country code/tz are correct.")
+        logger.error("[ENTSOE] Price fetch failed: %s", msg)
+        logger.info(
+            "Hint: Ensure ENTSOE token exists at ENTSOE_TOKEN_PATH and the country code/tz are correct"
+        )
         return
 
-    print("[ENTSOE] Retrieved prices:")
-    print(prices.head())
-    print("…")
-    print(prices.tail())
-    print(f"Count: {len(prices)}, range: {prices['price_eur_per_kwh'].min():.4f}–{prices['price_eur_per_kwh'].max():.4f} €/kWh")
+    logger.info("[ENTSOE] Retrieved prices:")
+    logger.info("%s", prices.head())
+    logger.info("…")
+    logger.info("%s", prices.tail())
+    logger.info(
+        "Count: %s, range: %.4f–%.4f €/kWh",
+        len(prices),
+        prices['price_eur_per_kwh'].min(),
+        prices['price_eur_per_kwh'].max(),
+    )
 
 
 if __name__ == "__main__":

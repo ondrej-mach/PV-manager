@@ -1,10 +1,22 @@
 import asyncio
 import json
+import logging
 import os
 import sys
+from pathlib import Path
 from urllib.parse import urlparse
 
 import websockets
+
+repo_root = Path(__file__).resolve().parent.parent
+src_path = repo_root / "src"
+if str(src_path) not in sys.path:
+    sys.path.append(str(src_path))
+
+from energy_forecaster.utils.logging_config import configure_logging
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 
 def _build_ws_url(http_url: str) -> str:
@@ -18,7 +30,7 @@ async def main() -> None:
     http_url = os.getenv("HA_HTTP_URL", "http://homeassistant.lan:8123")
     token = os.getenv("HASS_TOKEN")
     if not token:
-        print("HASS_TOKEN environment variable is not set", file=sys.stderr)
+        logger.error("HASS_TOKEN environment variable is not set")
         raise SystemExit(1)
 
     ws_url = _build_ws_url(http_url)
@@ -27,13 +39,13 @@ async def main() -> None:
         await ws.send(json.dumps({"type": "auth", "access_token": token}))
         auth = json.loads(await ws.recv())
         if auth.get("type") != "auth_ok":
-            print(f"Authentication failed: {auth}", file=sys.stderr)
+            logger.error("Authentication failed: %s", auth)
             raise SystemExit(1)
 
         request = {"id": 1, "type": "recorder/list_statistic_ids"}
         await ws.send(json.dumps(request))
         response = json.loads(await ws.recv())
-        print(json.dumps(response, indent=2, sort_keys=True))
+    logger.info(json.dumps(response, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,17 @@
 import json
+import logging
+import sys
 from pathlib import Path
+
+repo_root = Path(__file__).resolve().parent.parent
+src_path = repo_root / "src"
+if str(src_path) not in sys.path:
+    sys.path.append(str(src_path))
+
+from energy_forecaster.utils.logging_config import configure_logging
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 path = Path('recorder_list.out')
 if not path.exists():
@@ -10,7 +22,7 @@ with path.open() as f:
 
 entries = data.get('result', [])
 ids = [entry.get('statistic_id') for entry in entries if entry.get('statistic_id')]
-print(f"total statistics: {len(ids)}")
+logger.info("total statistics: %s", len(ids))
 needles = [
     'sensor.house_consumption',
     'sensor.pv_power',
@@ -18,9 +30,9 @@ needles = [
     'sensor.goodwe_pv_power',
 ]
 for needle in needles:
-    print(f"{needle}:", needle in ids)
-print('sample containing "goodwe":')
+    logger.info("%s present: %s", needle, needle in ids)
+logger.info('sample containing "goodwe":')
 for sid in ids:
     if sid and 'goodwe' in sid.lower():
-        print('  ', sid)
+        logger.info('  %s', sid)
         break

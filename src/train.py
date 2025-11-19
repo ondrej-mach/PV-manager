@@ -1,6 +1,7 @@
+import asyncio
+import logging
 import os
 import sys
-import asyncio
 from datetime import datetime, timezone
 import pandas as pd
 
@@ -14,6 +15,7 @@ if repo_root not in sys.path:
 
 from energy_forecaster.services.training_service import run_training_pipeline
 from energy_forecaster.io.home_assistant import HomeAssistant
+from energy_forecaster.utils.logging_config import configure_logging
 from app.pv_manager.settings import load_settings
 
 # Configuration
@@ -32,11 +34,15 @@ DEFAULT_ENTITIES = [
 ]
 
 
+configure_logging()
+logger = logging.getLogger(__name__)
+
+
 def _load_inverter_config():
     try:
         settings = load_settings()
     except Exception as exc:
-        print(f"[TRAIN] Warning: failed to load settings.json ({exc}); falling back to defaults.")
+        logger.warning("[TRAIN] Failed to load settings.json; falling back to defaults: %s", exc)
         return None, None, None
     inverter = settings.inverter
     return list(inverter.stat_ids()), dict(inverter.rename_map()), dict(inverter.scales())
@@ -48,7 +54,7 @@ def main():
         token = os.getenv("HASS_TOKEN")
         url = os.getenv("HASS_WS_URL") or "ws://homeassistant.lan:8123/api/websocket"
         if not token:
-            print("Please set HASS_TOKEN environment variable")
+            logger.error("HASS_TOKEN environment variable is not set")
             return
     else:
         token = None  # Will use SUPERVISOR_TOKEN
@@ -59,18 +65,21 @@ def main():
     stat_ids, rename_map, scales = _load_inverter_config()
     active_entities = stat_ids or DEFAULT_ENTITIES
     
-    print("Current environment:")
-    print(f"HASS_WS_URL: {ha.url}")
-    print(f"Using token: {'supervisor' if os.getenv('SUPERVISOR_TOKEN') else 'custom'}")
+    logger.info("Current environment:")
+    logger.info("HASS_WS_URL: %s", ha.url)
+    logger.info("Using token: %s", "supervisor" if os.getenv("SUPERVISOR_TOKEN") else "custom")
     
     # Get location from Home Assistant or use fallback
-    print("\nFetching HA configuration...")
+    logger.info("Fetching HA configuration from Home Assistant…")
     lat, lon, tz = ha.get_location(FALLBACK_LAT, FALLBACK_LON, FALLBACK_TZ)
-    print(f"Using coordinates: {lat}, {lon} and timezone: {tz}")
+    logger.info("Resolved coordinates: %s, %s | timezone=%s", lat, lon, tz)
 
-    print(f"\n[TRAIN] Using HA sensors: {active_entities}")
-    print(f"[TRAIN] Starting training pipeline with target lookback {LOOKBACK_DAYS} days (this may take a while).")
-    print("[TRAIN] The actual available HA stats window and counts will be shown by the training pipeline.")
+    logger.info("[TRAIN] Using HA sensors: %s", active_entities)
+    logger.info(
+        "[TRAIN] Starting training pipeline with target lookback %s days (this may take a while)",
+        LOOKBACK_DAYS,
+    )
+    logger.info("[TRAIN] The actual HA stats window will be reported by the training pipeline")
 
     try:
         # Run the training pipeline reusing the existing HomeAssistant instance
@@ -86,21 +95,26 @@ def main():
             scales=scales,
         )
 
-        print("\n[TRAIN] Training completed successfully!")
-        print(f"[TRAIN] Models saved to: {MODELS_DIR}")
-        print(f"[TRAIN] Training window: {results['window'][0]} to {results['window'][1]}")
-        print(f"[TRAIN] House training samples: {results.get('house_samples')} | PV training samples: {results.get('pv_samples')}")
+        logger.info("[TRAIN] Training completed successfully!")
+        logger.info(
+            "[TRAIN] Training window: %s to %s | samples house=%s pv=%s",
+            results["window"][0],
+            results["window"][1],
+            results.get("house_samples"),
+            results.get("pv_samples"),
+        )
+        logger.info("[TRAIN] Models saved to: %s", MODELS_DIR)
 
-        print("\n[TRAIN] House model features:")
+        logger.info("[TRAIN] House model features:")
         for feat in results['house_features']:
-            print(f"  - {feat}")
+            logger.info("  - %s", feat)
 
-        print("\n[TRAIN] PV model features:")
+        logger.info("[TRAIN] PV model features:")
         for feat in results['pv_features']:
-            print(f"  - {feat}")
+            logger.info("  - %s", feat)
 
-    except Exception as e:
-        print(f"Error during training: {str(e)}")
+    except Exception:
+        logger.exception("Error during training")
     finally:
         # Ensure we always close the connection
         try:

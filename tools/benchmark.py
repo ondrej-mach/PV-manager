@@ -6,6 +6,7 @@ This benchmark simulates real-world operation:
 - Execute hourly, then repeat next day
 - Compare actual costs vs baseline
 """
+import logging
 import os
 import sys
 from pathlib import Path
@@ -36,6 +37,10 @@ from energy_forecaster.features.data_prep import (
     TARGET_COL,
     assemble_forecast_features,
 )
+from energy_forecaster.utils.logging_config import configure_logging
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 # Lazy imports for optional dependencies
 def get_optimal_control():
@@ -165,7 +170,7 @@ def _solve_true_optimal(S: pd.DataFrame, cfg: BatteryConfig) -> pd.DataFrame | N
             continue
 
     if last_exc is not None:
-        print(f"[BENCH]     True optimal solve failed: {last_exc}")
+        logger.warning("True optimal solve failed: %s", last_exc)
     return None
 
 # Benchmark window selection controls
@@ -212,7 +217,7 @@ def simulate_rolling_optimal(actual_data, weather, prices, cfg, reoptimize_inter
     except Exception as exc:
         house_model = None
         pv_model = None
-        print(f"[BENCH] Warning: failed to load prediction models ({exc}); using actuals as forecasts")
+        logger.warning("Failed to load prediction models (%s); using actuals as forecasts", exc)
     
     # Initialize battery state
     soc = 0.5  # Start at 50%
@@ -232,7 +237,7 @@ def simulate_rolling_optimal(actual_data, weather, prices, cfg, reoptimize_inter
     steps_per_reopt = int(reoptimize_interval_h / dt_h)
     if steps_per_reopt < 1:
         steps_per_reopt = 1
-        print(f"[BENCH] Warning: reoptimize_interval_h={reoptimize_interval_h} < data resolution (1h), using 1 step")
+        logger.warning("reoptimize_interval_h=%s < data resolution (1h), using 1 step", reoptimize_interval_h)
     
     horizon_steps = int(HORIZON_HOURS / dt_h)  # 24 steps for 24h horizon
     
@@ -240,8 +245,8 @@ def simulate_rolling_optimal(actual_data, weather, prices, cfg, reoptimize_inter
     total_steps = len(actual_data)
     current_step = 0
     
-    print(f"[BENCH] MPC simulation: re-optimize every {reoptimize_interval_h}h, horizon={HORIZON_HOURS}h")
-    print(f"[BENCH] Total timesteps: {total_steps}, re-optimization points: {total_steps // steps_per_reopt}")
+    logger.info("MPC simulation: re-optimize every %sh, horizon=%sh", reoptimize_interval_h, HORIZON_HOURS)
+    logger.info("Total timesteps: %s, re-optimization points: %s", total_steps, total_steps // steps_per_reopt)
     
     reopt_count = 0
     while current_step < total_steps:
@@ -250,7 +255,13 @@ def simulate_rolling_optimal(actual_data, weather, prices, cfg, reoptimize_inter
             reopt_count += 1
             if reopt_count % 50 == 0:
                 current_time = actual_data.index[current_step]
-                print(f"[BENCH]   Re-optimization {reopt_count} at step {current_step}/{total_steps}: {current_time}")
+                logger.info(
+                    "Re-optimization %s at step %s/%s: %s",
+                    reopt_count,
+                    current_step,
+                    total_steps,
+                    current_time,
+                )
             
             # Get next horizon_steps (or remaining) for optimization
             end_step = min(current_step + horizon_steps, total_steps)
@@ -316,7 +327,7 @@ def simulate_rolling_optimal(actual_data, weather, prices, cfg, reoptimize_inter
                         if load_pred.isna().any():
                             raise ValueError("forecast load contains NaNs after fallback fill")
                         if not load_forecast_fallback_warned:
-                            print("[BENCH]     Load forecast missing entries; using persistence fallback")
+                            logger.warning("Load forecast missing entries; using persistence fallback")
                             load_forecast_fallback_warned = True
 
                     pv_forecast = pv_pred.reindex(S_actual.index).ffill().bfill().clip(lower=0.0)
@@ -334,7 +345,7 @@ def simulate_rolling_optimal(actual_data, weather, prices, cfg, reoptimize_inter
                         "price_eur_per_kwh": horizon_prices.values,
                     })
                 except Exception as forecast_err:
-                    print(f"[BENCH]     Forecast generation failed, using actuals: {forecast_err}")
+                    logger.warning("Forecast generation failed, using actuals: %s", forecast_err)
                     S_horizon = S_actual
             else:
                 S_horizon = S_actual
@@ -343,7 +354,7 @@ def simulate_rolling_optimal(actual_data, weather, prices, cfg, reoptimize_inter
             try:
                 opt_plan = solve_lp(S_horizon, cfg, soc0=soc)
             except Exception as e:
-                print(f"[BENCH]     Optimization failed at step {current_step}: {e}")
+                logger.warning("Optimization failed at step %s: %s", current_step, e)
                 # Fall back to baseline for this horizon
                 opt_plan = simulate_dumb_eco_mode(S_horizon, cfg, soc0=soc)
         
@@ -407,7 +418,7 @@ def _run_window_benchmark(S: pd.DataFrame,
                           tz: str,
                           models_dir: str = MODELS_DIR) -> tuple[pd.DataFrame, pd.DataFrame | None, pd.DataFrame | None, dict]:
     """Run baseline, MPC, and true optimal on a window; return (dumb, mpc, true, summary)."""
-    print(f"[BENCH] Running window: {label} | {S.index[0]} to {S.index[-1]} ({len(S)} hours)")
+    logger.info("Running window: %s | %s to %s (%s hours)", label, S.index[0], S.index[-1], len(S))
 
     # Dumb eco baseline
     dumb_result = simulate_dumb_eco_mode(S, cfg)
@@ -416,7 +427,7 @@ def _run_window_benchmark(S: pd.DataFrame,
     dumb_net_cost = dumb_cost_import - dumb_rev_export
 
     # Optimal (MPC)
-    print(f"[BENCH]   MPC re-opt={reoptimize_interval_h}h, horizon={HORIZON_HOURS}h")
+    logger.info("MPC re-opt=%sh, horizon=%sh", reoptimize_interval_h, HORIZON_HOURS)
     opt_result = simulate_rolling_optimal(
         S,
         weather,
@@ -471,11 +482,11 @@ def _run_window_benchmark(S: pd.DataFrame,
         "opt_vs_true_gap_pct": opt_gap_pct,
     }
 
-    print(f"[BENCH]   Result: MPC savings {savings:.2f} € ({savings_pct:.1f}%)")
+    logger.info("Result: MPC savings %.2f € (%.1f%%)", savings, savings_pct)
     if not np.isnan(true_net_cost):
-        print(f"[BENCH]   True optimal net cost {true_net_cost:.2f} € (gap vs MPC {opt_gap_eur:.2f} €)")
+        logger.info("True optimal net cost %.2f € (gap vs MPC %.2f €)", true_net_cost, opt_gap_eur)
     else:
-        print("[BENCH]   True optimal solution unavailable (see logs)")
+        logger.info("True optimal solution unavailable (see logs)")
 
     return dumb_result, opt_result, true_result, summary
 
@@ -486,7 +497,7 @@ def main():
         token = os.getenv("HASS_TOKEN")
         url = os.getenv("HASS_WS_URL") or "ws://192.168.1.11:8123/api/websocket"
         if not token:
-            print("Please set HASS_TOKEN environment variable")
+            logger.error("Please set HASS_TOKEN environment variable")
             return
     else:
         token = None
@@ -502,22 +513,22 @@ def main():
         
         # Allow overriding the cached window via env
         if BENCHMARK_START and BENCHMARK_END:
-            print(f"[BENCH] Downloading benchmark data for {BENCHMARK_START} to {BENCHMARK_END}...")
+            logger.info("Downloading benchmark data for %s to %s...", BENCHMARK_START, BENCHMARK_END)
             download_benchmark_data(ha, lat, lon, tz,
                                     start=BENCHMARK_START, end=BENCHMARK_END,
                                     force_refresh=True)
             ha_stats, weather, prices = load_benchmark_data()
         else:
             if force_refresh:
-                print("[BENCH] BENCHMARK_REFRESH requested, re-downloading default range...")
+                logger.info("BENCHMARK_REFRESH requested, re-downloading default range...")
                 download_benchmark_data(ha, lat, lon, tz, force_refresh=True)
                 ha_stats, weather, prices = load_benchmark_data()
             else:
                 try:
                     ha_stats, weather, prices = load_benchmark_data()
-                    print("[BENCH] Loaded benchmark data from cache")
+                    logger.info("Loaded benchmark data from cache")
                 except FileNotFoundError:
-                    print("[BENCH] Benchmark data not found, downloading default range...")
+                    logger.info("Benchmark data not found, downloading default range...")
                     download_benchmark_data(ha, lat, lon, tz, force_refresh=True)
                     ha_stats, weather, prices = load_benchmark_data()
 
@@ -542,10 +553,10 @@ def main():
         # Find common hourly index
         idx = ha_stats.index.intersection(weather.index).intersection(prices.index)
         if len(idx) == 0:
-            print("[BENCH] No overlapping data between HA stats, weather, and prices")
+            logger.error("No overlapping data between HA stats, weather, and prices")
             return
 
-        print(f"[BENCH] Full available period: {idx[0]} to {idx[-1]} ({len(idx)} hours, {len(idx)/24:.0f} days)")
+        logger.info("Full available period: %s to %s (%s hours, %.0f days)", idx[0], idx[-1], len(idx), len(idx) / 24)
 
         # Build input DataFrame with actual data
         dt_h = 1.0  # hourly
@@ -569,8 +580,12 @@ def main():
         if BENCHMARK_MONTH:
             S_month = _subset_by_month(S, BENCHMARK_MONTH)
             if S_month.empty:
-                print(f"[BENCH] No data found for month {BENCHMARK_MONTH}. "
-                      f"Available range: {S.index[0]} .. {S.index[-1]}")
+                logger.warning(
+                    "No data found for month %s. Available range: %s .. %s",
+                    BENCHMARK_MONTH,
+                    S.index[0],
+                    S.index[-1],
+                )
                 return
             prices_month = prices.loc[S_month.index]
             weather_month = weather_aligned.loc[S_month.index]
@@ -585,7 +600,7 @@ def main():
                 models_dir=MODELS_DIR,
             )
         elif SEGMENT_DAYS and SEGMENT_DAYS > 0:
-            print(f"[BENCH] Running non-overlapping {SEGMENT_DAYS}-day segments across available data…")
+            logger.info("Running non-overlapping %s-day segments across available data…", SEGMENT_DAYS)
             segment_hours = SEGMENT_DAYS * 24
             summaries = []
             all_dumb: list[pd.DataFrame] = []
@@ -632,7 +647,7 @@ def main():
             if all_true:
                 pd.concat(all_true).to_csv("output/benchmark_true_optimal.csv")
             pd.DataFrame(summaries).to_csv("output/benchmark_segments_summary.csv", index=False)
-            print("[BENCH] Saved: output/benchmark_segments_summary.csv")
+            logger.info("Saved: output/benchmark_segments_summary.csv")
 
             dumb_result = pd.concat(all_dumb).sort_index() if all_dumb else simulate_dumb_eco_mode(S, cfg)
             opt_result = pd.concat(all_opt).sort_index() if all_opt else simulate_rolling_optimal(
@@ -689,13 +704,13 @@ def main():
         os.makedirs("output", exist_ok=True)
         # Save CSVs
         dumb_result.to_csv("output/benchmark_dumb_eco.csv")
-        print("[BENCH] Saved: output/benchmark_dumb_eco.csv")
+        logger.info("Saved: output/benchmark_dumb_eco.csv")
         if opt_result is not None:
             opt_result.to_csv("output/benchmark_optimal.csv")
-            print("[BENCH] Saved: output/benchmark_optimal.csv")
+            logger.info("Saved: output/benchmark_optimal.csv")
         if true_result is not None:
             true_result.to_csv("output/benchmark_true_optimal.csv")
-            print("[BENCH] Saved: output/benchmark_true_optimal.csv")
+            logger.info("Saved: output/benchmark_true_optimal.csv")
 
         # Create comparison plots
         fig, axes = plt.subplots(3, 1, figsize=(14, 10))
@@ -742,17 +757,17 @@ def main():
 
         fig.tight_layout()
         fig.savefig("output/benchmark_comparison.png", dpi=150)
-        print("[BENCH] Saved: output/benchmark_comparison.png")
+        logger.info("Saved: output/benchmark_comparison.png")
 
         # Save summary metrics
         # Persist summary
         summary_df = pd.DataFrame([summary])
         summary_df.to_csv("output/benchmark_summary.csv", index=False)
-        print("[BENCH] Saved: output/benchmark_summary.csv")
+        logger.info("Saved: output/benchmark_summary.csv")
 
         # Monthly breakdown analysis
         if opt_result is not None and len(idx) > 24*30:  # Only if we have at least a month of data
-            print("\n[BENCH] Generating monthly breakdown...")
+            logger.info("Generating monthly breakdown...")
             
             # Add month column to both results
             dumb_monthly = dumb_result.copy()
@@ -803,7 +818,7 @@ def main():
             
             monthly_df = pd.DataFrame(monthly_stats)
             monthly_df.to_csv("output/benchmark_monthly.csv", index=False)
-            print("[BENCH] Saved: output/benchmark_monthly.csv")
+            logger.info("Saved: output/benchmark_monthly.csv")
             
             # Plot monthly savings
             fig_monthly, ax_monthly = plt.subplots(2, 1, figsize=(12, 8))
@@ -842,10 +857,10 @@ def main():
             
             fig_monthly.tight_layout()
             fig_monthly.savefig("output/benchmark_monthly_savings.png", dpi=150)
-            print("[BENCH] Saved: output/benchmark_monthly_savings.png")
+            logger.info("Saved: output/benchmark_monthly_savings.png")
             
             # Print summary
-            print("\n[BENCH] Monthly breakdown:")
+            logger.info("Monthly breakdown:")
             for _, row in monthly_df.iterrows():
                 dumb_cost = row.get('dumb_cost_eur', float('nan'))
                 opt_cost = row.get('opt_cost_eur', float('nan'))
@@ -863,11 +878,14 @@ def main():
                     pct_str = f"{true_pct_of_dumb:>5.1f}%" if not np.isnan(true_pct_of_dumb) else "  n/a"
                     true_display = f"{true_cost:>7.2f}€ ({pct_str} of dumb)"
 
-                print(
-                    f"  {row['month']}: dumb {dumb_cost:>7.2f}€, "
-                    f"mpc {opt_display}, "
-                    f"true {true_display}, "
-                    f"PV {row['pv_kwh']:>7.0f} kWh, load {row['load_kwh']:>7.0f} kWh"
+                logger.info(
+                    "  %s: dumb %7.2f€, mpc %s, true %s, PV %7.0f kWh, load %7.0f kWh",
+                    row['month'],
+                    dumb_cost,
+                    opt_display,
+                    true_display,
+                    row['pv_kwh'],
+                    row['load_kwh'],
                 )
 
     finally:

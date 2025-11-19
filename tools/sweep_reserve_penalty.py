@@ -7,6 +7,7 @@ as CSV and plotted to output/reserve_penalty_sweep.png.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import subprocess
 import sys
@@ -20,6 +21,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.append(str(SRC_PATH))
+
+from energy_forecaster.utils.logging_config import configure_logging
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 
 def _run_benchmark(repo_root: Path, env: dict) -> pd.DataFrame:
@@ -124,7 +130,7 @@ def main() -> None:
         else:
             env.pop("BENCHMARK_MONTH", None)
 
-        print(f"[SWEEP] Running benchmark for penalty={penalty if penalty is not None else 'default'}")
+        logger.info("Running benchmark for penalty=%s", penalty if penalty is not None else "default")
         summary_row = _run_benchmark(repo_root, env)
         summary_row["penalty_eur_per_kwh"] = penalty if penalty is not None else float("nan")
         summary_row["reserve_soc_soft"] = args.soft_reserve
@@ -134,13 +140,13 @@ def main() -> None:
     combined = pd.concat(records, ignore_index=True)
     combined_path = repo_root / args.output_csv
     combined.to_csv(combined_path, index=False)
-    print(f"[SWEEP] Saved sweep results to {combined_path}")
+    logger.info("Saved sweep results to %s", combined_path)
 
     # Prepare data for plotting; drop NaN penalty (default heuristic) gracefully
     plot_df = combined.copy()
     plot_df = plot_df.dropna(subset=["penalty_eur_per_kwh"]).sort_values("penalty_eur_per_kwh")
     if plot_df.empty:
-        print("[SWEEP] No numeric penalties provided; skipping plot generation")
+        logger.warning("No numeric penalties provided; skipping plot generation")
         return
 
     penalties_plot = plot_df["penalty_eur_per_kwh"].to_numpy()
@@ -155,7 +161,7 @@ def main() -> None:
     fig.tight_layout()
     plot_path = output_dir / "reserve_penalty_sweep.png"
     fig.savefig(plot_path, dpi=150)
-    print(f"[SWEEP] Saved plot to {plot_path}")
+    logger.info("Saved plot to %s", plot_path)
 
 
 if __name__ == "__main__":

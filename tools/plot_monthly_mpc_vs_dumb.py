@@ -16,6 +16,7 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import subprocess
 import sys
@@ -28,6 +29,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.append(str(SRC_PATH))
+
+from energy_forecaster.utils.logging_config import configure_logging
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -87,7 +93,7 @@ def _run_benchmark(script_path: Path, refresh: bool) -> None:
     env.pop("SEGMENT_DAYS", None)
     if refresh:
         env["BENCHMARK_REFRESH"] = "1"
-    print(f"Running benchmark via {script_path}...")
+    logger.info("Running benchmark via %s...", script_path)
     subprocess.run([sys.executable, str(script_path)], check=True, env=env)
 
 
@@ -98,19 +104,19 @@ def main() -> int:
         try:
             _run_benchmark(args.benchmark_script, args.refresh_data)
         except subprocess.CalledProcessError as exc:
-            print(f"Benchmark run failed with exit code {exc.returncode}", file=sys.stderr)
+            logger.error("Benchmark run failed with exit code %s", exc.returncode)
             return exc.returncode or 1
         except Exception as exc:  # pragma: no cover - defensive logging
-            print(f"Failed to run benchmark: {exc}", file=sys.stderr)
+            logger.error("Failed to run benchmark: %s", exc)
             return 1
 
     if not args.input.exists():
-        print(f"Monthly summary not found at {args.input}. Run benchmark.py first.", file=sys.stderr)
+        logger.error("Monthly summary not found at %s. Run benchmark.py first.", args.input)
         return 1
 
     df = pd.read_csv(args.input)
     if df.empty:
-        print("Monthly summary CSV is empty; nothing to plot.", file=sys.stderr)
+        logger.error("Monthly summary CSV is empty; nothing to plot.")
         return 1
 
     _validate_columns(df)
@@ -137,7 +143,7 @@ def main() -> int:
 
     _ensure_output_dir(args.output)
     fig.savefig(args.output, dpi=150)
-    print(f"Saved plot to {args.output}")
+    logger.info("Saved plot to %s", args.output)
     return 0
 
 

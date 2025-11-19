@@ -1,5 +1,6 @@
 
 from typing import List, Tuple, Optional, Dict, Any
+import logging
 import os
 import time
 import pandas as pd
@@ -13,6 +14,8 @@ from energy_forecaster.io.home_assistant import HomeAssistant
 from energy_forecaster.io.open_meteo import fetch_openmeteo_archive
 from energy_forecaster.features.data_prep import assemble_training_frames, TARGET_COL, PV_COL
 
+
+logger = logging.getLogger(__name__)
 
 def _set_feature_metadata(model, columns):
     cols = list(columns)
@@ -71,7 +74,7 @@ def run_training_pipeline(
     rename_map: Optional[Dict[str, str]] = None,
     scales: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
-    print("[TRAIN] Fetching Home Assistant statistics...")
+    logger.info("[TRAIN] Fetching Home Assistant statistics…")
     if ha is None:
         ha = HomeAssistant()  # Use default supervisor connection if none provided
     ha_raw = ha.fetch_statistics_sync(stat_ids, days=lookback_days, chunk_days=30)
@@ -80,18 +83,24 @@ def run_training_pipeline(
 
     # Report raw HA stats window and counts so user knows how much data we actually have
     start, end = ha_raw.index.min(), ha_raw.index.max()
-    print(f"[TRAIN] HA statistics received: rows={len(ha_raw)}, cols={len(ha_raw.columns)}")
-    print(f"[TRAIN] HA stats window: {start} to {end}")
+    logger.info("[TRAIN] HA statistics received: rows=%s cols=%s", len(ha_raw), len(ha_raw.columns))
+    logger.info("[TRAIN] HA stats window: %s -> %s", start, end)
 
-    print("[TRAIN] Fetching weather archive from Open-Meteo...")
+    logger.info("[TRAIN] Fetching weather archive from Open-Meteo…")
     wx = fetch_openmeteo_archive(start, end, lat=lat, lon=lon, tz=tz)
-    print(f"[TRAIN] Weather data: rows={len(wx)}, cols={len(wx.columns)}; window={wx.index.min()} to {wx.index.max() if len(wx)>0 else 'N/A'}")
+    logger.info(
+        "[TRAIN] Weather data: rows=%s cols=%s window=%s -> %s",
+        len(wx),
+        len(wx.columns),
+        wx.index.min() if len(wx) else "N/A",
+        wx.index.max() if len(wx) else "N/A",
+    )
 
-    print("[TRAIN] Assembling training frames and computing features...")
+    logger.info("[TRAIN] Assembling training frames and computing features…")
     frames = assemble_training_frames(ha_raw, wx, tz=tz, rename_map=rename_map, scales=scales)
     df_house = frames["house"]
     df_pv    = frames["pv"]
-    print(f"[TRAIN] After feature engineering: house={df_house.shape}, pv={df_pv.shape}")
+    logger.info("[TRAIN] After feature engineering: house=%s pv=%s", df_house.shape, df_pv.shape)
 
     house_model = house_model or default_house_model()
     pv_model    = pv_model or default_pv_model()
@@ -100,22 +109,22 @@ def run_training_pipeline(
     house_feature_cols = list(df_house.drop(columns=[TARGET_COL]).columns)
     Xh = df_house[house_feature_cols].values
     yh = df_house[TARGET_COL].values
-    print(f"[TRAIN] Training house consumption model on {len(yh)} samples and {Xh.shape[1]} features...")
+    logger.info("[TRAIN] Training house model: samples=%s features=%s", len(yh), Xh.shape[1])
     t0 = time.perf_counter()
     house_model.fit(Xh, yh)
     t1 = time.perf_counter()
-    print(f"[TRAIN] House model trained in {t1-t0:.1f}s")
+    logger.info("[TRAIN] House model trained in %.1fs", t1 - t0)
     _set_feature_metadata(house_model, house_feature_cols)
 
     # Fit pv model
     pv_feature_cols = list(df_pv.drop(columns=[PV_COL]).columns)
     Xp = df_pv[pv_feature_cols].values
     yp = df_pv[PV_COL].values
-    print(f"[TRAIN] Training PV model on {len(yp)} samples and {Xp.shape[1]} features...")
+    logger.info("[TRAIN] Training PV model: samples=%s features=%s", len(yp), Xp.shape[1])
     t0 = time.perf_counter()
     pv_model.fit(Xp, yp)
     t1 = time.perf_counter()
-    print(f"[TRAIN] PV model trained in {t1-t0:.1f}s")
+    logger.info("[TRAIN] PV model trained in %.1fs", t1 - t0)
     _set_feature_metadata(pv_model, pv_feature_cols)
 
     if save_dir:
@@ -124,13 +133,13 @@ def run_training_pipeline(
         pv_path = os.path.join(save_dir, "pv_power.joblib")
         dump(house_model, house_path)
         dump(pv_model, pv_path)
-        print(f"[TRAIN] Models saved: {house_path}, {pv_path}")
+    logger.info("[TRAIN] Models saved: %s, %s", house_path, pv_path)
 
     return {
         "house_model": house_model,
         "pv_model": pv_model,
-    "house_features": house_feature_cols,
-    "pv_features": pv_feature_cols,
+        "house_features": house_feature_cols,
+        "pv_features": pv_feature_cols,
         "window": (start, end),
         "house_samples": len(yh),
         "pv_samples": len(yp),

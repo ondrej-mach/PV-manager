@@ -1,6 +1,7 @@
 """Download and cache historical data for benchmarking."""
 from __future__ import annotations
 
+import logging
 import os
 from typing import Tuple
 import pandas as pd
@@ -14,6 +15,9 @@ BENCHMARK_DIR = os.getenv("BENCHMARK_DIR", "benchmark_data")
 # Use a full year to capture seasonal variations (summer = high PV, winter = low PV)
 DEFAULT_START = "2024-01-01"
 DEFAULT_END = "2024-12-31"  # Full year of data
+
+
+logger = logging.getLogger(__name__)
 
 
 def download_benchmark_data(
@@ -41,7 +45,7 @@ def download_benchmark_data(
 
     # Download HA stats
     if force_refresh or not os.path.exists(ha_path):
-        print(f"[BENCH] Downloading HA stats from {start} to {end}...")
+        logger.info("[BENCH] Downloading HA stats from %s to %s…", start, end)
         ENTITIES = [("sensor.house_consumption", "mean"), ("sensor.pv_power", "mean")]
         start_ts = pd.Timestamp(start, tz=tz)
         end_ts = pd.Timestamp(end, tz=tz) + pd.Timedelta(days=1)
@@ -52,41 +56,41 @@ def download_benchmark_data(
             ha.fetch_statistics_window_async(ENTITIES, start_ts, end_ts, period="hour")
         )
         ha_data.to_csv(ha_path)
-        print(f"[BENCH] Saved HA stats to {ha_path}")
+        logger.info("[BENCH] Saved HA stats to %s", ha_path)
     else:
-        print(f"[BENCH] HA stats already exist at {ha_path}")
+        logger.info("[BENCH] HA stats already exist at %s", ha_path)
 
     # Download weather
     if force_refresh or not os.path.exists(wx_path):
-        print(f"[BENCH] Downloading weather from {start} to {end}...")
+        logger.info("[BENCH] Downloading weather from %s to %s…", start, end)
         start_ts = pd.Timestamp(start, tz=tz)
         end_ts = pd.Timestamp(end, tz=tz)
         wx_data = fetch_openmeteo_archive(start_ts, end_ts, lat, lon, tz)
         wx_data.to_csv(wx_path)
-        print(f"[BENCH] Saved weather to {wx_path}")
+        logger.info("[BENCH] Saved weather to %s", wx_path)
     else:
-        print(f"[BENCH] Weather already exists at {wx_path}")
+        logger.info("[BENCH] Weather already exists at %s", wx_path)
 
     # Download prices
     if force_refresh or not os.path.exists(price_path):
-        print(f"[BENCH] Downloading prices from {start} to {end}...")
+        logger.info("[BENCH] Downloading prices from %s to %s…", start, end)
         country = guess_country_code_from_tz(tz)
         start_ts = pd.Timestamp(start, tz=tz)
         end_ts = pd.Timestamp(end, tz=tz) + pd.Timedelta(days=1)
         try:
             prices = fetch_day_ahead_prices_country(country, start_ts, end_ts, tz)
             prices.to_csv(price_path)
-            print(f"[BENCH] Saved prices to {price_path}")
+            logger.info("[BENCH] Saved prices to %s", price_path)
         except Exception as e:
-            print(f"[BENCH] Price download failed: {e}")
-            print("[BENCH] Creating mock prices...")
+            logger.error("[BENCH] Price download failed: %s", e)
+            logger.info("[BENCH] Creating mock prices…")
             # Create hourly mock prices
             idx = pd.date_range(start_ts, end_ts, freq="h", tz="UTC")
             mock_prices = pd.DataFrame({"price_eur_per_kwh": 0.10}, index=idx)
             mock_prices.to_csv(price_path)
-            print(f"[BENCH] Saved mock prices to {price_path}")
+            logger.info("[BENCH] Saved mock prices to %s", price_path)
     else:
-        print(f"[BENCH] Prices already exist at {price_path}")
+        logger.info("[BENCH] Prices already exist at %s", price_path)
 
 
 def load_benchmark_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:

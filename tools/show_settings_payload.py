@@ -1,5 +1,18 @@
 import asyncio
+import logging
 import os
+import sys
+from pathlib import Path
+
+repo_root = Path(__file__).resolve().parent.parent
+src_path = repo_root / "src"
+if str(src_path) not in sys.path:
+    sys.path.append(str(src_path))
+
+from energy_forecaster.utils.logging_config import configure_logging
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 from app.pv_manager.state import AppContext
 
@@ -15,11 +28,17 @@ def main() -> None:
     async def run() -> None:
         await ctx.start()
         payload = await ctx.get_settings_payload()
-        print(f"statistics count: {len(payload.get('statistics', []))}")
+        logger.info("statistics count: %s", len(payload.get('statistics', [])))
         for entry in payload.get("statistics", [])[:5]:
-            print(entry.get("statistic_id"))
-        print("house entry:", next((item for item in payload.get("statistics", []) if item.get("statistic_id") == "sensor.house_consumption"), None))
-        print("pv entry:", next((item for item in payload.get("statistics", []) if item.get("statistic_id") == "sensor.pv_power"), None))
+            logger.info("statistic: %s", entry.get("statistic_id"))
+        logger.info(
+            "house entry: %s",
+            next((item for item in payload.get("statistics", []) if item.get("statistic_id") == "sensor.house_consumption"), None),
+        )
+        logger.info(
+            "pv entry: %s",
+            next((item for item in payload.get("statistics", []) if item.get("statistic_id") == "sensor.pv_power"), None),
+        )
         await ctx.stop()
 
     asyncio.run(run())

@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 
@@ -8,7 +9,6 @@ os.environ['PYTHONWARNINGS'] = 'ignore::ResourceWarning'
 
 from datetime import datetime, timezone
 import pandas as pd
-import matplotlib.pyplot as plt
 
 # Ensure src is on path
 src_path = os.path.dirname(os.path.abspath(__file__))
@@ -21,13 +21,14 @@ if repo_root not in sys.path:
 from energy_forecaster.io.home_assistant import HomeAssistant
 from energy_forecaster.services.prediction_service import run_prediction_pipeline
 from energy_forecaster.features.data_prep import PV_COL, TARGET_COL
+from energy_forecaster.utils.logging_config import configure_logging
 from app.pv_manager.settings import load_settings
 
 MODELS_DIR = os.getenv("MODELS_DIR", "trained_models")
 HORIZON_HOURS = 24  # Always predict 24 hours ahead
 INTERVAL_MINUTES = 15  # Predict at 15-minute intervals (96 predictions per 24h)
 USE_MOCK_WEATHER = os.getenv("USE_MOCK_WEATHER", "0").lower() in ("true", "1", "yes")
-DEBUG_DUMP_DIR = os.getenv("PREDICTION_DEBUG_DIR")
+DEBUG_DUMP_DIR = os.getenv("DEBUG_DIR")
 
 # Havlíčkův Brod coordinates as fallback
 FALLBACK_LAT = 49.6069
@@ -40,11 +41,15 @@ DEFAULT_ENTITIES = [
 ]
 
 
+configure_logging()
+logger = logging.getLogger(__name__)
+
+
 def _load_inverter_config():
     try:
         settings = load_settings()
     except Exception as exc:
-        print(f"[PRED] Warning: failed to load settings.json ({exc}); falling back to defaults.")
+        logger.warning("[PRED] Failed to load settings.json; falling back to defaults: %s", exc)
         return None, None, None
     inverter = settings.inverter
     return list(inverter.stat_ids()), dict(inverter.rename_map()), dict(inverter.scales())
@@ -56,7 +61,7 @@ def main():
         token = os.getenv("HASS_TOKEN")
         url = os.getenv("HASS_WS_URL") or "ws://192.168.1.11:8123/api/websocket"
         if not token:
-            print("Please set HASS_TOKEN environment variable")
+            logger.error("HASS_TOKEN environment variable is not set")
             return
     else:
         token = None
@@ -66,19 +71,23 @@ def main():
     stat_ids, rename_map, scales = _load_inverter_config()
     active_entities = stat_ids or DEFAULT_ENTITIES
 
-    print("Current environment:")
-    print(f"HASS_WS_URL: {ha.url}")
-    print(f"Using token: {'supervisor' if os.getenv('SUPERVISOR_TOKEN') else 'custom'}")
-    print(f"Using HA sensors: {active_entities}")
+    logger.info("Current environment:")
+    logger.info("HASS_WS_URL: %s", ha.url)
+    logger.info("Using token: %s", "supervisor" if os.getenv("SUPERVISOR_TOKEN") else "custom")
+    logger.info("Using HA sensors: %s", active_entities)
 
-    print("\nFetching HA configuration...")
+    logger.info("Fetching HA configuration from Home Assistant…")
     lat, lon, tz = ha.get_location(FALLBACK_LAT, FALLBACK_LON, FALLBACK_TZ)
-    print(f"Using coordinates: {lat}, {lon} and timezone: {tz}")
+    logger.info("Resolved coordinates: %s, %s | timezone=%s", lat, lon, tz)
 
-    print(f"\n[PRED] Running prediction pipeline for next {HORIZON_HOURS} hours at {INTERVAL_MINUTES}-minute intervals...")
-    print(f"[PRED] Using {'MOCK' if USE_MOCK_WEATHER else 'REAL'} weather forecast")
+    logger.info(
+        "[PRED] Running prediction pipeline for next %sh at %s-minute intervals (weather=%s)",
+        HORIZON_HOURS,
+        INTERVAL_MINUTES,
+        "MOCK" if USE_MOCK_WEATHER else "REAL",
+    )
     if DEBUG_DUMP_DIR:
-        print(f"[PRED] Debug dumps enabled (CSV) under: {DEBUG_DUMP_DIR}")
+        logger.info("[PRED] Debug dumps enabled under %s", DEBUG_DUMP_DIR)
     try:
         results = run_prediction_pipeline(
             ha=ha,
@@ -104,41 +113,15 @@ def main():
         output_dir = os.path.join(os.getcwd(), "output")
         os.makedirs(output_dir, exist_ok=True)
 
-        print(f"\n[PRED] ✓ Predictions complete:")
-        print(f"  - PV: {len(pv_pred)} timesteps, range {pv_pred[PV_COL].min():.2f}-{pv_pred[PV_COL].max():.2f} kW")
-        print(f"  - House: {len(house_pred)} timesteps, range {house_pred[TARGET_COL].min():.2f}-{house_pred[TARGET_COL].max():.2f} kW")
-
-        # Plot PV: last 48h actual vs next horizon predicted
-        fig1, ax1 = plt.subplots(figsize=(12, 4))
-        recent_pv = ha_recent.get("pv_power_kw")
-        if recent_pv is not None:
-            recent_window = recent_pv.loc[pd.Timestamp.now(tz="UTC") - pd.Timedelta("48h"):]
-            ax1.plot(recent_window.index, recent_window.values, label="PV actual", color="#1f77b4", linewidth=1.5)
-        ax1.plot(pv_pred.index, pv_pred["pv_power_kw"].values, label="PV predicted", color="#ff7f0e", linestyle="--", linewidth=2)
-        ax1.set_title(f"PV Power: Actual (last 48h) vs Predicted (next {HORIZON_HOURS}h at {INTERVAL_MINUTES}min intervals)")
-        ax1.set_ylabel("kW")
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        fig1.tight_layout()
-        pv_path = os.path.join(output_dir, "predictions_pv.png")
-        fig1.savefig(pv_path)
-        print(f"[PRED] Saved: {pv_path}")
-
-        # Plot House load
-        fig2, ax2 = plt.subplots(figsize=(12, 4))
-        recent_cons = ha_recent.get("power_consumption_kw")
-        if recent_cons is not None:
-            recent_window = recent_cons.loc[pd.Timestamp.now(tz="UTC") - pd.Timedelta("48h") :]
-            ax2.plot(recent_window.index, recent_window.values, label="Load actual", color="#1f77b4", linewidth=1.5)
-        ax2.plot(house_pred.index, house_pred["power_consumption_kw"].values, label="Load predicted", color="#2ca02c", linestyle=":", linewidth=2)
-        ax2.set_title(f"House Load: Actual (last 48h) vs Predicted (next {HORIZON_HOURS}h at {INTERVAL_MINUTES}min intervals)")
-        ax2.set_ylabel("kW")
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        fig2.tight_layout()
-        house_path = os.path.join(output_dir, "predictions_house.png")
-        fig2.savefig(house_path)
-        print(f"[PRED] Saved: {house_path}")
+        logger.info(
+            "[PRED] ✓ Predictions complete: PV=%s rows (%.2f–%.2f kW) | House=%s rows (%.2f–%.2f kW)",
+            len(pv_pred),
+            pv_pred[PV_COL].min(),
+            pv_pred[PV_COL].max(),
+            len(house_pred),
+            house_pred[TARGET_COL].min(),
+            house_pred[TARGET_COL].max(),
+        )
 
         # Persist raw data for diagnostics
         pv_pred.to_csv(os.path.join(output_dir, "pv_pred.csv"))
@@ -153,7 +136,7 @@ def main():
             house_feats.to_csv(os.path.join(output_dir, "house_features.csv"))
         if isinstance(weather_feats, pd.DataFrame):
             weather_feats.to_csv(os.path.join(output_dir, "weather_forecast.csv"))
-        print("[PRED] Saved diagnostic CSVs to output/ directory")
+        logger.info("[PRED] Saved diagnostic CSVs to output/")
 
     finally:
         import asyncio

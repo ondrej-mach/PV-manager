@@ -159,7 +159,7 @@ class AppContext:
         self._ha_error: Optional[str] = None
         self._stat_catalog: list[dict[str, Any]] = []
         self._entity_catalog: list[dict[str, Any]] = []
-        debug_dir_env = os.getenv("PREDICTION_DEBUG_DIR")
+        debug_dir_env = os.getenv("DEBUG_DIR")
         self._debug_dir = Path(debug_dir_env).expanduser() if debug_dir_env else None
 
     async def _call_in_thread(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
