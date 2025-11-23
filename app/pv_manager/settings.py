@@ -108,16 +108,20 @@ class InverterSettings:
     export_power_limited: bool = False
 
     def rename_map(self) -> Dict[str, str]:
-        return {
-            self.house_consumption.entity_id: TARGET_COL,
-            self.pv_power.entity_id: PV_COL,
-        }
+        m = {}
+        if self.house_consumption.entity_id:
+            m[self.house_consumption.entity_id] = TARGET_COL
+        if self.pv_power.entity_id:
+            m[self.pv_power.entity_id] = PV_COL
+        return m
 
     def stat_ids(self) -> list[tuple[str, str]]:
-        return [
-            (self.house_consumption.entity_id, "mean"),
-            (self.pv_power.entity_id, "mean"),
-        ]
+        ids = []
+        if self.house_consumption.entity_id:
+            ids.append((self.house_consumption.entity_id, "mean"))
+        if self.pv_power.entity_id:
+            ids.append((self.pv_power.entity_id, "mean"))
+        return ids
 
     def scales(self) -> Dict[str, float]:
         return {
@@ -180,11 +184,11 @@ def unit_to_kw_factor(unit: Optional[str]) -> float:
     if not unit:
         return 1.0
     cleaned = unit.strip().lower()
-    if cleaned in {"w", "watt", "watts"}:
+    if cleaned in {"w", "watt", "watts", "wh"}:
         return 0.001
-    if cleaned in {"kw", "kilowatt", "kilowatts"}:
+    if cleaned in {"kw", "kilowatt", "kilowatts", "kwh"}:
         return 1.0
-    if cleaned in {"mw", "megawatt", "megawatts"}:
+    if cleaned in {"mw", "megawatt", "megawatts", "mwh"}:
         return 1000.0
     return 1.0
 

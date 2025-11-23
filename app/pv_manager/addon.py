@@ -79,29 +79,15 @@ def _build_router(ctx: AppContext) -> APIRouter:
         payload = await ctx.get_settings_payload()
         return JSONResponse(payload)
 
-    @router.post("/api/settings/inverter")
-    async def update_inverter(payload: dict[str, Any]) -> JSONResponse:
+
+    @router.patch("/api/settings")
+    async def update_settings(payload: dict[str, Any]) -> JSONResponse:
         try:
-            updated = await ctx.update_inverter_settings(payload)
+            updated = await ctx.update_settings(payload)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         return JSONResponse(updated)
 
-    @router.post("/api/settings/battery")
-    async def update_battery(payload: dict[str, Any]) -> JSONResponse:
-        try:
-            updated = await ctx.update_battery_settings(payload)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        return JSONResponse(updated)
-
-    @router.post("/api/settings/pricing")
-    async def update_pricing(payload: dict[str, Any]) -> JSONResponse:
-        try:
-            updated = await ctx.update_pricing_settings(payload)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        return JSONResponse(updated)
 
     return router
 

@@ -559,6 +559,45 @@ class AppContext:
             "battery_net_kw": round(net_batt, 4),
         }
 
+    async def _update_entity_selection(
+        self,
+        current: Optional[EntitySelection],
+        block: Dict[str, Any],
+        catalog_map: Dict[str, Any],
+    ) -> Tuple[Optional[EntitySelection], bool]:
+        """Updates EntitySelection. Returns (updated_selection, changed)."""
+        entity_id = block.get("entity_id", current.entity_id if current else None)
+        
+        if entity_id and entity_id not in catalog_map:
+            _LOGGER.warning("Recorder metadata missing for statistic '%s'", entity_id)
+
+        changed = False
+        if not current and entity_id:
+            current = EntitySelection(entity_id=entity_id)
+            changed = True
+        elif current and current.entity_id != entity_id:
+            if entity_id is None: return None, True
+            current.entity_id = entity_id
+            changed = True
+            
+        if not current: return None, changed
+
+        new_unit = block.get("unit")
+        if not new_unit and current.entity_id:
+            meta = catalog_map.get(current.entity_id)
+            new_unit = meta.get("unit") if meta else None
+            if not new_unit:
+                try:
+                    state = await self._call_in_thread(self._ha.get_entity_state_sync, current.entity_id)
+                    if state: new_unit = state.get("attributes", {}).get("unit_of_measurement")
+                except Exception: pass
+        
+        if new_unit and current.unit != new_unit:
+            current.unit = new_unit
+            changed = True
+            
+        return current, changed
+
     async def get_settings_payload(self) -> dict[str, Any]:
         async with self._settings_lock:
             serialized = self._serialize_settings(self._settings)
@@ -575,30 +614,21 @@ class AppContext:
             settings = self._settings
             inverter = settings.inverter
 
-            def _apply(key: str, selection) -> None:
-                nonlocal changed
-                nonlocal catalog_changed
+            async def _apply(key: str, current: Optional[EntitySelection]) -> Tuple[Optional[EntitySelection], bool]:
                 block = payload.get(key)
                 if not isinstance(block, dict):
-                    return
-                entity_id = block.get("entity_id") or selection.entity_id
-                meta = catalog_map.get(entity_id)
-                if not meta:
-                    _LOGGER.warning("Recorder metadata missing for statistic '%s'", entity_id)
-                elif not self._meta_supports_mean(meta):
-                    _LOGGER.warning("Statistic '%s' does not declare mean values; proceeding with best effort", entity_id)
-                if selection.entity_id != entity_id:
-                    selection.entity_id = entity_id
-                    changed = True
-                    catalog_changed = True
-                unit = block.get("unit") or (meta.get("unit") if meta else selection.unit)
-                if unit and selection.unit != unit:
-                    selection.unit = unit
-                    changed = True
-                    catalog_changed = True
+                    return current, False
+                return await self._update_entity_selection(current, block, catalog_map)
 
-            _apply("house_consumption", inverter.house_consumption)
-            _apply("pv_power", inverter.pv_power)
+            inverter.house_consumption, changed_house = await _apply("house_consumption", inverter.house_consumption)
+            if changed_house:
+                changed = True
+                catalog_changed = True
+
+            inverter.pv_power, changed_pv = await _apply("pv_power", inverter.pv_power)
+            if changed_pv:
+                changed = True
+                catalog_changed = True
 
             if "export_power_limited" in payload:
                 flag = payload.get("export_power_limited")
@@ -668,23 +698,12 @@ class AppContext:
                         battery.soc_sensor = None
                         changed = True
                 elif isinstance(block, dict):
-                    entity_id = block.get("entity_id")
-                    if not entity_id:
-                        if battery.soc_sensor is not None:
-                            battery.soc_sensor = None
-                            changed = True
-                    else:
-                        meta = entity_map.get(entity_id)
-                        if meta is None:
-                            raise ValueError("Sensor not found or not supported for battery SoC")
-                        if battery.soc_sensor is None or battery.soc_sensor.entity_id != entity_id:
-                            battery.soc_sensor = EntitySelection(entity_id=entity_id, unit=meta.get("unit"))
-                            changed = True
-                        else:
-                            unit = block.get("unit") or meta.get("unit")
-                            if unit and battery.soc_sensor.unit != unit:
-                                battery.soc_sensor.unit = unit
-                                changed = True
+                    # Use the shared helper
+                    battery.soc_sensor, sensor_changed = await self._update_entity_selection(
+                        battery.soc_sensor, block, entity_map
+                    )
+                    if sensor_changed:
+                        changed = True
                 else:
                     raise ValueError("soc_sensor must be null or an object with entity_id")
 
@@ -751,6 +770,40 @@ class AppContext:
             serialized = self._serialize_settings(self._settings)
 
         return await self._build_settings_response(serialized)
+
+    async def update_settings(self, data: Dict[str, Any]) -> dict[str, Any]:
+        """Update one or more settings sections with a partial payload."""
+        payload = self._require_mapping(data)
+
+        # Track if catalogs need refresh (only inverter updates trigger this)
+        refresh_stats = False
+        refresh_entities = False
+
+        # Update each section if present in payload
+        if "inverter" in payload:
+            # Inverter updates may require catalog refresh
+            result = await self.update_inverter_settings(payload["inverter"])
+            # Extract refresh flags from result by checking if catalogs changed
+            # The update already saved settings and refreshed catalogs if needed
+            # We'll skip the final refresh since it was already done
+            return result  # Already includes full response
+
+        if "battery" in payload:
+            await self.update_battery_settings(payload["battery"])
+
+        if "pricing" in payload:
+            await self.update_pricing_settings(payload["pricing"])
+
+        # Return unified response
+        async with self._settings_lock:
+            serialized = self._serialize_settings(self._settings)
+
+        return await self._build_settings_response(
+            serialized,
+            refresh_stats=refresh_stats,
+            refresh_entities=refresh_entities,
+        )
+
 
     async def refresh_statistics_catalog(self) -> List[Dict[str, Any]]:
         try:

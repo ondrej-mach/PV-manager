@@ -131,8 +131,6 @@ const batteryFieldConfigs = {
 };
 const pricingForm = document.getElementById('pricingForm');
 const pricingMessage = document.getElementById('pricingMessage');
-const savePricingBtn = document.getElementById('savePricingBtn');
-const resetPricingBtn = document.getElementById('resetPricingBtn');
 const importTariffModeSelect = document.getElementById('importTariffMode');
 const exportTariffModeSelect = document.getElementById('exportTariffMode');
 const importTariffHint = document.getElementById('importTariffHint');
@@ -973,16 +971,9 @@ function handleTariffModeChange(scope, mode) {
     schedulePricingSave();
 }
 
-function resetPricingToDefaults() {
-    pricingSettings = defaultPricingSettings();
-    renderPricingForm();
-    setPricingMessage('Restored tariff defaults. Saving…');
-    schedulePricingSave();
-}
 
-function handleSavePricingClick() {
-    void savePricingSettings(true);
-}
+
+
 
 function schedulePricingSave() {
     if (!pricingForm) return;
@@ -1010,12 +1001,6 @@ async function savePricingSettings(manual = false) {
         pricingSaveTimer = null;
     }
     pricingSaving = true;
-    if (savePricingBtn) {
-        savePricingBtn.setAttribute('disabled', 'disabled');
-    }
-    if (resetPricingBtn) {
-        resetPricingBtn.setAttribute('disabled', 'disabled');
-    }
     if (manual) {
         setPricingMessage('Saving pricing…');
     } else {
@@ -1024,10 +1009,10 @@ async function savePricingSettings(manual = false) {
     try {
         const payload = normalizePricingSettings(pricingSettings);
         pricingSettings = payload;
-        const response = await fetchJson('/api/settings/pricing', {
-            method: 'POST',
+        const response = await fetchJson('/api/settings', {
+            method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ pricing: payload }),
         });
         applySettingsPayload(response);
         if (manual) {
@@ -1040,12 +1025,6 @@ async function savePricingSettings(manual = false) {
         setPricingMessage(message, 'error');
     } finally {
         pricingSaving = false;
-        if (savePricingBtn) {
-            savePricingBtn.removeAttribute('disabled');
-        }
-        if (resetPricingBtn) {
-            resetPricingBtn.removeAttribute('disabled');
-        }
         if (pricingPendingResave) {
             pricingPendingResave = false;
             schedulePricingSave();
@@ -1146,15 +1125,15 @@ function setEntityTriggersDisabled(disabled) {
 async function updateInverterSelection(key, entityId) {
     if (!inverterSettings || inverterBusy) return;
     const current = inverterSettings[key] ? inverterSettings[key].entity_id : null;
-    if (!entityId || entityId === current) return;
+    if (entityId === current) return;
     inverterBusy = true;
     setEntityTriggersDisabled(true);
     setInverterMessage('Saving selection…');
     try {
-        const payload = await fetchJson('/api/settings/inverter', {
-            method: 'POST',
+        const payload = await fetchJson('/api/settings', {
+            method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ [key]: { entity_id: entityId } }),
+            body: JSON.stringify({ inverter: { [key]: { entity_id: entityId } } }),
         });
         applySettingsPayload(payload);
         setInverterMessage('Saved. Re-run training to refresh the models with the new inputs.', 'success');
@@ -1175,10 +1154,10 @@ async function updateExportLimitSetting(enabled) {
     setEntityTriggersDisabled(true);
     setInverterMessage('Saving selection…');
     try {
-        const payload = await fetchJson('/api/settings/inverter', {
-            method: 'POST',
+        const payload = await fetchJson('/api/settings', {
+            method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ export_power_limited: Boolean(enabled) }),
+            body: JSON.stringify({ inverter: { export_power_limited: Boolean(enabled) } }),
         });
         applySettingsPayload(payload);
         setInverterMessage('Saved export limit preference. Re-run training to incorporate the change.', 'success');
@@ -1204,10 +1183,10 @@ async function updateBatterySelection(entityId) {
     renderBatteryForm();
     setBatteryMessage('Saving selection…');
     try {
-        const payload = await fetchJson('/api/settings/battery', {
-            method: 'POST',
+        const payload = await fetchJson('/api/settings', {
+            method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ soc_sensor: { entity_id: entityId } }),
+            body: JSON.stringify({ battery: { soc_sensor: { entity_id: entityId } } }),
         });
         applySettingsPayload(payload);
         setBatteryMessage('Saved. Future optimizations will start from this sensor reading.', 'success');
@@ -1229,10 +1208,10 @@ async function submitBatteryConfig(partial, options = {}) {
         setBatteryMessage(pendingText);
     }
     try {
-        const payload = await fetchJson('/api/settings/battery', {
-            method: 'POST',
+        const payload = await fetchJson('/api/settings', {
+            method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(partial),
+            body: JSON.stringify({ battery: partial }),
         });
         applySettingsPayload(payload);
         if (typeof options.onSuccess === 'function') {
@@ -1398,6 +1377,27 @@ function renderEntityList(searchTerm) {
         return;
     }
     let current = null;
+
+    // Add None option
+    const noneOption = document.createElement('button');
+    noneOption.type = 'button';
+    noneOption.className = 'entity-option';
+    noneOption.setAttribute('role', 'option');
+    noneOption.innerHTML = `
+        <span class="entity-name">None</span>
+        <span class="entity-meta">Clear selection</span>
+    `;
+    noneOption.addEventListener('click', () => {
+        const targetKey = entityModalTarget;
+        closeEntityModal();
+        if (targetKey === 'battery_soc') {
+            updateBatterySelection(null);
+        } else if (targetKey) {
+            updateInverterSelection(targetKey, null);
+        }
+    });
+    entityListContainer.appendChild(noneOption);
+
     if (entityModalTarget === 'battery_soc') {
         current = batterySettings && batterySettings.soc_sensor ? batterySettings.soc_sensor.entity_id : null;
     } else if (entityModalTarget && inverterSettings && inverterSettings[entityModalTarget]) {
@@ -1434,8 +1434,8 @@ function updateSummary(summary) {
         { key: 'import_kwh', id: 'summary-import', format: (v) => numberFmt1.format(v) },
         { key: 'export_kwh', id: 'summary-export', format: (v) => numberFmt1.format(v) },
         { key: 'net_cost_eur', id: 'summary-net', format: (v) => currencyFmt.format(v) },
-    { key: 'pv_energy_kwh', id: 'summary-pv-energy', format: (v) => numberFmt1.format(v) },
-    { key: 'consumption_kwh', id: 'summary-load', format: (v) => numberFmt1.format(v) },
+        { key: 'pv_energy_kwh', id: 'summary-pv-energy', format: (v) => numberFmt1.format(v) },
+        { key: 'consumption_kwh', id: 'summary-load', format: (v) => numberFmt1.format(v) },
     ];
     if (!summary) {
         mapping.forEach((item) => {
@@ -2020,8 +2020,6 @@ window.addEventListener('DOMContentLoaded', () => {
         });
     });
     bindTariffFields();
-    bindClick(savePricingBtn, handleSavePricingClick);
-    bindClick(resetPricingBtn, resetPricingToDefaults);
     window.addEventListener('keydown', (event) => {
         if (event.key === 'Escape' && entityModal && entityModal.classList.contains('open')) {
             closeEntityModal();

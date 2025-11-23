@@ -14,4 +14,4 @@ test_prediction.py
 output/
 recorder_list.out
 *.csv
-app/pv_manager/settings.json
+

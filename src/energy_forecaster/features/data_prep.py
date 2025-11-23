@@ -2,6 +2,9 @@
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
+import logging
+
+_LOGGER = logging.getLogger(__name__)
 
 WEATHER_FEATURES: List[str] = [
     "relative_humidity_2m",
@@ -168,12 +171,9 @@ def assemble_training_frames(
     ha = normalize_ha(ha_raw, rename=rename, scales=scales or DEFAULT_SCALES, freq_minutes=freq_minutes)
     missing_required = [col for col in (TARGET_COL, PV_COL) if col not in ha.columns]
     if missing_required:
-        available = list(ha.columns)
-        raise RuntimeError(
-            "Home Assistant statistics are missing required column(s) "
-            f"{missing_required}. Available columns after renaming: {available}. "
-            f"Rename map in effect: {rename}."
-        )
+        _LOGGER.warning("Home Assistant statistics are missing required column(s) %s. Filling with zeros.", missing_required)
+        for col in missing_required:
+            ha[col] = 0.0
     wx_aligned = wx.reindex(ha.index).ffill().bfill()
     base = pd.concat([ha, wx_aligned], axis=1)
     base = add_hdd_cdd_temp_sq(base)
@@ -224,12 +224,9 @@ def assemble_forecast_features(
     ha = normalize_ha(ha_recent, rename=rename, scales=scales or DEFAULT_SCALES, freq_minutes=freq_minutes)
     missing_required = [col for col in (TARGET_COL, PV_COL) if col not in ha.columns]
     if missing_required:
-        available = list(ha.columns)
-        raise RuntimeError(
-            "Home Assistant history is missing required column(s) "
-            f"{missing_required}. Available columns after renaming: {available}. "
-            f"Rename map in effect: {rename}."
-        )
+        _LOGGER.warning("Home Assistant history is missing required column(s) %s. Filling with zeros.", missing_required)
+        for col in missing_required:
+            ha[col] = 0.0
 
     # Resample to match the future timeline frequency if needed
     try:
