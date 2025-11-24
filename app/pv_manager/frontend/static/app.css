@@ -281,7 +281,7 @@ main {
     gap: 1rem;
 }
 
-.tariff-group + .tariff-group {
+.tariff-group+.tariff-group {
     margin-top: 1.5rem;
 }
 
@@ -528,27 +528,68 @@ body.modal-open {
     font-size: clamp(1.25rem, 1.8vw, 1.5rem);
 }
 
-.status-row {
+.control-row {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    justify-content: space-between;
+    gap: 1rem;
     margin-bottom: 0.75rem;
 }
 
-.status-row span.label {
+.switch-label {
     font-weight: 600;
+    font-size: 1.1rem;
 }
 
-.dot {
-    width: 12px;
-    height: 12px;
+.toggle-switch {
+    all: unset;
+    /* Reset generic button styles */
+    position: relative;
+    width: 52px;
+    height: 30px;
+    background-color: #d1d5db;
+    /* Darker gray for better contrast */
+    border-radius: 999px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: background-color 0.2s ease-in-out, border-color 0.2s ease;
+    padding: 2px;
+    display: flex;
+    align-items: center;
+    box-sizing: border-box;
+    /* Ensure padding doesn't affect width */
+}
+
+.toggle-switch:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--bg-color), 0 0 0 4px var(--mdc-theme-primary, #2563eb);
+}
+
+.toggle-switch[aria-checked="true"] {
+    background-color: var(--mdc-theme-primary, #2563eb);
+}
+
+.toggle-switch .knob {
+    display: block;
+    width: 22px;
+    /* Slightly smaller to fit with padding */
+    height: 22px;
+    background-color: white;
     border-radius: 50%;
-    background: #cccccc;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+    transition: transform 0.2s ease-in-out;
+    transform: translateX(0);
     flex-shrink: 0;
+    /* Prevent shrinking */
 }
 
-.dot.ok {
-    background: #22c55e;
+.toggle-switch[aria-checked="true"] .knob {
+    transform: translateX(22px);
+}
+
+.toggle-switch[disabled] {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .actions {

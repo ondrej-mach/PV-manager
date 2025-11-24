@@ -1452,8 +1452,6 @@ function updateSummary(summary) {
 }
 
 function applyStatus(payload) {
-    const dot = document.querySelector('#status .dot');
-    const label = document.getElementById('statusLabel');
     const errorEl = document.getElementById('error');
     const trainingStateEl = document.getElementById('trainingState');
     const trainingErrorEl = document.getElementById('trainingError');
@@ -1463,19 +1461,24 @@ function applyStatus(payload) {
     const cycleMessageEl = document.getElementById('cycleMessage');
     const summaryWindowEl = document.getElementById('summaryWindow');
 
+    const controlSwitch = document.getElementById('controlSwitch');
+    if (controlSwitch) {
+        controlSwitch.setAttribute('aria-checked', String(Boolean(payload.control_active)));
+        if (haError) {
+            controlSwitch.setAttribute('disabled', 'disabled');
+        } else {
+            controlSwitch.removeAttribute('disabled');
+        }
+    }
+
     if (!haError && payload.snapshot_available) {
-        dot.classList.add('ok');
-        label.textContent = 'Service online';
+        // Status OK
     } else if (!haError) {
-        dot.classList.remove('ok');
-        label.textContent = 'Waiting for forecast…';
         if (summaryWindowEl) {
             summaryWindowEl.textContent = '';
         }
         renderIntervention(null, 'Current intervention: Waiting for forecast…');
     } else {
-        dot.classList.remove('ok');
-        label.textContent = 'Home Assistant unavailable';
         if (summaryWindowEl) {
             summaryWindowEl.textContent = '';
         }
@@ -2032,6 +2035,32 @@ window.addEventListener('DOMContentLoaded', () => {
     updateViewMode();
     renderIntervention(null, 'Current intervention: Waiting for forecast…');
     activateSettingsTab('inverter');
+
+    const controlSwitch = document.getElementById('controlSwitch');
+    if (controlSwitch) {
+        controlSwitch.addEventListener('click', async (e) => {
+            // Toggle current state
+            const current = controlSwitch.getAttribute('aria-checked') === 'true';
+            const active = !current;
+
+            // Optimistic update
+            controlSwitch.setAttribute('aria-checked', String(active));
+
+            try {
+                const response = await fetchJson('/api/control', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ active }),
+                });
+                controlSwitch.setAttribute('aria-checked', String(response.active));
+            } catch (err) {
+                console.error('Failed to toggle control:', err);
+                // Revert on error
+                controlSwitch.setAttribute('aria-checked', String(current));
+                setInverterMessage(`Failed to toggle control: ${err.message}`, 'error');
+            }
+        });
+    }
 
     setInterval(() => {
         if (!showingSettings) {

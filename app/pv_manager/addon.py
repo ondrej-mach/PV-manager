@@ -33,6 +33,7 @@ def _build_router(ctx: AppContext) -> APIRouter:
             "training": ctx.get_training_status().as_dict(),
             "home_assistant_error": ha_error,
             "cycle_running": ctx.is_cycle_running(),
+            "control_active": ctx.is_control_active(),
         }
 
         snapshot = await ctx.get_snapshot()
@@ -73,6 +74,12 @@ def _build_router(ctx: AppContext) -> APIRouter:
         except RuntimeError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         return JSONResponse({"started": True})
+
+    @router.post("/api/control")
+    async def set_control(payload: dict[str, Any]) -> JSONResponse:
+        active = bool(payload.get("active", False))
+        await ctx.set_control_active(active)
+        return JSONResponse({"active": ctx.is_control_active()})
 
     @router.get("/api/settings")
     async def get_settings() -> JSONResponse:

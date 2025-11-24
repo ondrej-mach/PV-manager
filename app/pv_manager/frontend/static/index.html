@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8" />
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
@@ -8,82 +9,85 @@
     <link rel="stylesheet" href="/static/app.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" defer></script>
 </head>
+
 <body>
     <header>
         <div class="header-left">
-            <img src="https://fonts.gstatic.com/s/i/materialiconsoutlined/solar_power/v11/24px.svg" alt="PV" />
             <h1>PV Manager</h1>
         </div>
         <button type="button" class="secondary" id="settingsBtn">Settings</button>
     </header>
     <main>
         <div id="mainView" class="view">
-        <section class="card">
-            <h2>Add-on Status</h2>
-            <div id="status" class="status-row">
-                <span class="dot"></span>
-                <span class="label" id="statusLabel">Loading status…</span>
-            </div>
-            <div id="error" class="message error"></div>
-            <div class="summary-grid" id="summaryGrid">
-                <div class="summary-item">
-                    <span class="summary-label">Import (kWh)</span>
-                    <span class="summary-value" id="summary-import">--</span>
+            <section class="card">
+                <h2>System Overview</h2>
+                <div class="control-row">
+                    <label class="switch-label" for="controlSwitch">Automatic control</label>
+                    <button id="controlSwitch" class="toggle-switch" role="switch" aria-checked="false">
+                        <span class="knob"></span>
+                    </button>
                 </div>
-                <div class="summary-item">
-                    <span class="summary-label">Export (kWh)</span>
-                    <span class="summary-value" id="summary-export">--</span>
-                </div>
-                <div class="summary-item">
-                    <span class="summary-label">Net Cost (€)</span>
-                    <span class="summary-value" id="summary-net">--</span>
-                </div>
-                <div class="summary-item">
-                    <span class="summary-label">PV energy (kWh)</span>
-                    <span class="summary-value" id="summary-pv-energy">--</span>
-                </div>
-                <div class="summary-item">
-                    <span class="summary-label">Consumption (kWh)</span>
-                    <span class="summary-value" id="summary-load">--</span>
-                </div>
-            </div>
-            <div id="summaryWindow" class="meta"></div>
-            <div id="trainingState" class="training-state">Training status unknown.</div>
-            <div id="trainingError" class="training-state error" style="display:none;"></div>
-            <div id="cycleMessage" class="message" style="display:none;"></div>
-            <div class="actions">
-                <button type="button" class="secondary" id="refreshBtn">Refresh Data</button>
-                <button type="button" id="cycleBtn">Recompute Plan</button>
-                <button type="button" id="trainBtn">Trigger Training</button>
-            </div>
-        </section>
-
-        <section class="card">
-            <h2>Forecast vs Load</h2>
-            <p class="meta">Last updated: <span id="lastUpdated">waiting…</span></p>
-            <div id="forecastMessage" class="message"></div>
-            <div class="chart-container chart-forecast">
-                <canvas id="forecastChart" height="320"></canvas>
-            </div>
-        </section>
-
-        <section class="card">
-            <h2>Optimization Plan</h2>
-            <div class="optimization-charts">
-                <div class="optimization-block">
-                    <h3 class="chart-subtitle">Price &amp; battery state</h3>
-                    <div class="chart-container chart-plan">
-                        <canvas id="planChart" height="320"></canvas>
+                <div id="interventionBanner" class="intervention-banner none" style="margin-top: 1rem;">Current
+                    intervention: Waiting for forecast…</div>
+                <div id="error" class="message error"></div>
+                <div class="summary-grid" id="summaryGrid">
+                    <div class="summary-item">
+                        <span class="summary-label">Import (kWh)</span>
+                        <span class="summary-value" id="summary-import">--</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Export (kWh)</span>
+                        <span class="summary-value" id="summary-export">--</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Net Cost (€)</span>
+                        <span class="summary-value" id="summary-net">--</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">PV energy (kWh)</span>
+                        <span class="summary-value" id="summary-pv-energy">--</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Consumption (kWh)</span>
+                        <span class="summary-value" id="summary-load">--</span>
                     </div>
                 </div>
-                <div class="optimization-block">
-                    <h3 class="chart-subtitle">Grid exchange</h3>
-                    <div class="chart-container chart-grid">
-                        <canvas id="gridChart" height="320"></canvas>
+                <div id="summaryWindow" class="meta"></div>
+                <div id="trainingState" class="training-state">Training status unknown.</div>
+                <div id="trainingError" class="training-state error" style="display:none;"></div>
+                <div id="cycleMessage" class="message" style="display:none;"></div>
+                <div class="actions">
+                    <button type="button" id="cycleBtn">Recompute Plan</button>
+                    <button type="button" id="trainBtn">Trigger Training</button>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Forecast vs Load</h2>
+                <p class="meta">Last updated: <span id="lastUpdated">waiting…</span></p>
+                <div id="forecastMessage" class="message"></div>
+                <div class="chart-container chart-forecast">
+                    <canvas id="forecastChart" height="320"></canvas>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Optimization Plan</h2>
+                <div class="optimization-charts">
+                    <div class="optimization-block">
+                        <h3 class="chart-subtitle">Price &amp; battery state</h3>
+                        <div class="chart-container chart-plan">
+                            <canvas id="planChart" height="320"></canvas>
+                        </div>
+                    </div>
+                    <div class="optimization-block">
+                        <h3 class="chart-subtitle">Grid exchange</h3>
+                        <div class="chart-container chart-grid">
+                            <canvas id="gridChart" height="320"></canvas>
+                        </div>
                     </div>
                 </div>
-            </div>
-            <div id="interventionBanner" class="intervention-banner none">Current intervention: Waiting for forecast…</div>
+        </div>
         </section>
         </div>
         <div id="settingsView" class="view hidden">
@@ -99,12 +103,15 @@
                 <div class="settings-content">
                     <div data-settings-panel="inverter" class="settings-panel active">
                         <h3>Inverter Settings</h3>
-                        <p class="message">Select which Home Assistant statistics feed the house consumption and PV power forecasts. Values are normalized to kW automatically.</p>
+                        <p class="message">Select which Home Assistant statistics feed the house consumption and PV
+                            power forecasts. Values are normalized to kW automatically.</p>
                         <form id="inverterForm" class="settings-form" autocomplete="off">
                             <div class="field">
                                 <label id="houseEntityLabelText">House consumption sensor</label>
-                                <button type="button" id="houseEntityTrigger" class="entity-trigger" data-target="house_consumption" aria-labelledby="houseEntityLabelText houseEntityLabel">
-                                        <span class="entity-trigger-text" id="houseEntityLabel">None</span>
+                                <button type="button" id="houseEntityTrigger" class="entity-trigger"
+                                    data-target="house_consumption"
+                                    aria-labelledby="houseEntityLabelText houseEntityLabel">
+                                    <span class="entity-trigger-text" id="houseEntityLabel">None</span>
                                     <span class="entity-trigger-hint" aria-hidden="true">⌄</span>
                                 </button>
                                 <p class="hint" id="houseHint">Waiting for Home Assistant…</p>
@@ -114,40 +121,53 @@
                     </div>
                     <div data-settings-panel="battery" class="settings-panel">
                         <h3>Battery Settings</h3>
-                        <p class="message">Link a Home Assistant sensor that reports battery state of charge and set how much each kWh of battery throughput should cost to reflect wear.</p>
+                        <p class="message">Link a Home Assistant sensor that reports battery state of charge and set how
+                            much each kWh of battery throughput should cost to reflect wear.</p>
                         <form id="batteryForm" class="settings-form" autocomplete="off">
                             <div class="field">
                                 <label id="batterySocLabelText">Battery SoC sensor</label>
-                                <button type="button" id="batterySocTrigger" class="entity-trigger" data-target="battery_soc" aria-labelledby="batterySocLabelText batterySocLabel">
-                                        <span class="entity-trigger-text" id="batterySocLabel">None</span>
+                                <button type="button" id="batterySocTrigger" class="entity-trigger"
+                                    data-target="battery_soc" aria-labelledby="batterySocLabelText batterySocLabel">
+                                    <span class="entity-trigger-text" id="batterySocLabel">None</span>
                                     <span class="entity-trigger-hint" aria-hidden="true">⌄</span>
                                 </button>
-                                <p class="hint" id="batterySocHint">Choose a sensor reporting battery charge in percent (0-100) or fraction (0-1).</p>
+                                <p class="hint" id="batterySocHint">Choose a sensor reporting battery charge in percent
+                                    (0-100) or fraction (0-1).</p>
                             </div>
                             <div class="field">
                                 <label for="batteryCapacityInput">Usable capacity (kWh)</label>
-                                <input type="number" id="batteryCapacityInput" min="0.1" step="0.1" inputmode="decimal" aria-describedby="batteryCapacityHint" />
-                                <p class="hint" id="batteryCapacityHint">Defines how much energy the optimization can store in the battery.</p>
+                                <input type="number" id="batteryCapacityInput" min="0.1" step="0.1" inputmode="decimal"
+                                    aria-describedby="batteryCapacityHint" />
+                                <p class="hint" id="batteryCapacityHint">Defines how much energy the optimization can
+                                    store in the battery.</p>
                             </div>
                             <div class="field">
                                 <label for="batteryPowerInput">Charge / discharge limit (kW)</label>
-                                <input type="number" id="batteryPowerInput" min="0.1" step="0.1" inputmode="decimal" aria-describedby="batteryPowerHint" />
-                                <p class="hint" id="batteryPowerHint">Set to the inverter&apos;s continuous charge or discharge power limit.</p>
+                                <input type="number" id="batteryPowerInput" min="0.1" step="0.1" inputmode="decimal"
+                                    aria-describedby="batteryPowerHint" />
+                                <p class="hint" id="batteryPowerHint">Set to the inverter&apos;s continuous charge or
+                                    discharge power limit.</p>
                             </div>
                             <div class="field">
                                 <label for="batterySocMinInput">Reserve floor (% SoC)</label>
-                                <input type="number" id="batterySocMinInput" min="0" max="98" step="1" inputmode="decimal" aria-describedby="batterySocMinHint" />
-                                <p class="hint" id="batterySocMinHint">Keep at least this much charge reserved for resiliency.</p>
+                                <input type="number" id="batterySocMinInput" min="0" max="98" step="1"
+                                    inputmode="decimal" aria-describedby="batterySocMinHint" />
+                                <p class="hint" id="batterySocMinHint">Keep at least this much charge reserved for
+                                    resiliency.</p>
                             </div>
                             <div class="field">
                                 <label for="batterySocMaxInput">Maximum usable SoC (%)</label>
-                                <input type="number" id="batterySocMaxInput" min="2" max="100" step="1" inputmode="decimal" aria-describedby="batterySocMaxHint" />
-                                <p class="hint" id="batterySocMaxHint">Upper bound on usable charge to limit battery wear.</p>
+                                <input type="number" id="batterySocMaxInput" min="2" max="100" step="1"
+                                    inputmode="decimal" aria-describedby="batterySocMaxHint" />
+                                <p class="hint" id="batterySocMaxHint">Upper bound on usable charge to limit battery
+                                    wear.</p>
                             </div>
                             <div class="field">
                                 <label for="batteryWearInput">Battery wear cost (€/kWh)</label>
-                                <input type="number" id="batteryWearInput" min="0" step="0.01" inputmode="decimal" aria-describedby="batteryWearHint" />
-                                <p class="hint" id="batteryWearHint">Applied as a throughput penalty in the optimization to limit excessive cycling.</p>
+                                <input type="number" id="batteryWearInput" min="0" step="0.01" inputmode="decimal"
+                                    aria-describedby="batteryWearHint" />
+                                <p class="hint" id="batteryWearHint">Applied as a throughput penalty in the optimization
+                                    to limit excessive cycling.</p>
                             </div>
                             <p class="message" id="batteryMessage" style="display:none;"></p>
                         </form>
@@ -158,8 +178,9 @@
                         <form id="pvSystemForm" class="settings-form" autocomplete="off">
                             <div class="field">
                                 <label id="pvEntityLabelText">PV production sensor</label>
-                                <button type="button" id="pvEntityTrigger" class="entity-trigger" data-target="pv_power" aria-labelledby="pvEntityLabelText pvEntityLabel">
-                                        <span class="entity-trigger-text" id="pvEntityLabel">None</span>
+                                <button type="button" id="pvEntityTrigger" class="entity-trigger" data-target="pv_power"
+                                    aria-labelledby="pvEntityLabelText pvEntityLabel">
+                                    <span class="entity-trigger-text" id="pvEntityLabel">None</span>
                                     <span class="entity-trigger-hint" aria-hidden="true">⌄</span>
                                 </button>
                                 <p class="hint" id="pvHint">Waiting for Home Assistant…</p>
@@ -169,7 +190,8 @@
                                     <input type="checkbox" id="exportLimitToggle" aria-describedby="exportLimitHint" />
                                     <span>PV power is limited by the inverter</span>
                                 </label>
-                                <p class="hint" id="exportLimitHint">Enable when export throttling keeps PV power below the array&apos;s potential once batteries are full.</p>
+                                <p class="hint" id="exportLimitHint">Enable when export throttling keeps PV power below
+                                    the array&apos;s potential once batteries are full.</p>
                             </div>
                         </form>
                     </div>
@@ -186,34 +208,47 @@
                                         <option value="spot_plus_constant">Spot price with offset</option>
                                         <option value="dual_rate">Dual-rate schedule</option>
                                     </select>
-                                    <p class="hint" id="importTariffHint">Apply a single fixed rate to every interval.</p>
+                                    <p class="hint" id="importTariffHint">Apply a single fixed rate to every interval.
+                                    </p>
                                 </div>
-                                <div class="field" id="importConstantField" data-tariff-scope="import" data-tariff-mode="constant" style="display:none;">
+                                <div class="field" id="importConstantField" data-tariff-scope="import"
+                                    data-tariff-mode="constant" style="display:none;">
                                     <label for="importConstantPrice">Import price (€/kWh)</label>
-                                    <input type="number" id="importConstantPrice" min="0" step="0.001" inputmode="decimal" />
+                                    <input type="number" id="importConstantPrice" min="0" step="0.001"
+                                        inputmode="decimal" />
                                     <p class="hint">Used for every interval when constant pricing is selected.</p>
                                 </div>
-                                <div class="field" id="importSpotOffsetField" data-tariff-scope="import" data-tariff-mode="spot_plus_constant" style="display:none;">
+                                <div class="field" id="importSpotOffsetField" data-tariff-scope="import"
+                                    data-tariff-mode="spot_plus_constant" style="display:none;">
                                     <label for="importSpotOffset">Offset from spot price (€/kWh)</label>
                                     <input type="number" id="importSpotOffset" step="0.001" inputmode="decimal" />
-                                    <p class="hint">Positive values raise import prices; negative values lower them relative to the spot signal.</p>
+                                    <p class="hint">Positive values raise import prices; negative values lower them
+                                        relative to the spot signal.</p>
                                 </div>
-                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate" style="display:none;">
+                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
+                                    style="display:none;">
                                     <label for="importPeakRate">Peak price (€/kWh)</label>
                                     <input type="number" id="importPeakRate" min="0" step="0.001" inputmode="decimal" />
                                 </div>
-                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate" style="display:none;">
+                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
+                                    style="display:none;">
                                     <label for="importOffpeakRate">Off-peak price (€/kWh)</label>
-                                    <input type="number" id="importOffpeakRate" min="0" step="0.001" inputmode="decimal" />
+                                    <input type="number" id="importOffpeakRate" min="0" step="0.001"
+                                        inputmode="decimal" />
                                 </div>
-                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate" style="display:none;">
+                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
+                                    style="display:none;">
                                     <label for="importPeakStart">Peak start (local time)</label>
-                                    <input type="text" id="importPeakStart" inputmode="numeric" pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="07:00" />
+                                    <input type="text" id="importPeakStart" inputmode="numeric"
+                                        pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="07:00" />
                                 </div>
-                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate" style="display:none;">
+                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
+                                    style="display:none;">
                                     <label for="importPeakEnd">Peak end (local time)</label>
-                                    <input type="text" id="importPeakEnd" inputmode="numeric" pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
-                                    <p class="hint">Intervals between start and end use the peak rate; others use the off-peak rate.</p>
+                                    <input type="text" id="importPeakEnd" inputmode="numeric"
+                                        pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
+                                    <p class="hint">Intervals between start and end use the peak rate; others use the
+                                        off-peak rate.</p>
                                 </div>
                             </fieldset>
                             <fieldset class="tariff-group">
@@ -225,34 +260,47 @@
                                         <option value="spot_plus_constant">Spot price with offset</option>
                                         <option value="dual_rate">Dual-rate schedule</option>
                                     </select>
-                                    <p class="hint" id="exportTariffHint">Apply a single fixed rate to every interval.</p>
+                                    <p class="hint" id="exportTariffHint">Apply a single fixed rate to every interval.
+                                    </p>
                                 </div>
-                                <div class="field" id="exportConstantField" data-tariff-scope="export" data-tariff-mode="constant" style="display:none;">
+                                <div class="field" id="exportConstantField" data-tariff-scope="export"
+                                    data-tariff-mode="constant" style="display:none;">
                                     <label for="exportConstantPrice">Export price (€/kWh)</label>
-                                    <input type="number" id="exportConstantPrice" min="0" step="0.001" inputmode="decimal" />
+                                    <input type="number" id="exportConstantPrice" min="0" step="0.001"
+                                        inputmode="decimal" />
                                     <p class="hint">Used for every interval when constant pricing is selected.</p>
                                 </div>
-                                <div class="field" id="exportSpotOffsetField" data-tariff-scope="export" data-tariff-mode="spot_plus_constant" style="display:none;">
+                                <div class="field" id="exportSpotOffsetField" data-tariff-scope="export"
+                                    data-tariff-mode="spot_plus_constant" style="display:none;">
                                     <label for="exportSpotOffset">Offset from spot price (€/kWh)</label>
                                     <input type="number" id="exportSpotOffset" step="0.001" inputmode="decimal" />
-                                    <p class="hint">Positive values raise export revenue; negative values lower it relative to the spot tariff.</p>
+                                    <p class="hint">Positive values raise export revenue; negative values lower it
+                                        relative to the spot tariff.</p>
                                 </div>
-                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate" style="display:none;">
+                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
+                                    style="display:none;">
                                     <label for="exportPeakRate">Peak price (€/kWh)</label>
                                     <input type="number" id="exportPeakRate" min="0" step="0.001" inputmode="decimal" />
                                 </div>
-                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate" style="display:none;">
+                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
+                                    style="display:none;">
                                     <label for="exportOffpeakRate">Off-peak price (€/kWh)</label>
-                                    <input type="number" id="exportOffpeakRate" min="0" step="0.001" inputmode="decimal" />
+                                    <input type="number" id="exportOffpeakRate" min="0" step="0.001"
+                                        inputmode="decimal" />
                                 </div>
-                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate" style="display:none;">
+                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
+                                    style="display:none;">
                                     <label for="exportPeakStart">Peak start (local time)</label>
-                                    <input type="text" id="exportPeakStart" inputmode="numeric" pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="07:00" />
+                                    <input type="text" id="exportPeakStart" inputmode="numeric"
+                                        pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="07:00" />
                                 </div>
-                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate" style="display:none;">
+                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
+                                    style="display:none;">
                                     <label for="exportPeakEnd">Peak end (local time)</label>
-                                    <input type="text" id="exportPeakEnd" inputmode="numeric" pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
-                                    <p class="hint">Intervals between start and end use the peak rate; others use the off-peak rate.</p>
+                                    <input type="text" id="exportPeakEnd" inputmode="numeric"
+                                        pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
+                                    <p class="hint">Intervals between start and end use the peak rate; others use the
+                                        off-peak rate.</p>
                                 </div>
                             </fieldset>
                             <p class="message" id="pricingMessage" style="display:none;"></p>
@@ -271,7 +319,8 @@
         <div class="entity-modal-content">
             <div class="entity-modal-header">
                 <h3 id="entityModalTitle">Select sensor</h3>
-                <button type="button" id="entityModalClose" class="entity-modal-close" aria-label="Close selector">×</button>
+                <button type="button" id="entityModalClose" class="entity-modal-close"
+                    aria-label="Close selector">×</button>
             </div>
             <div class="entity-modal-body">
                 <input type="search" id="entitySearch" placeholder="Search sensors…" autocomplete="off" />
@@ -285,4 +334,5 @@
     <script src="/static/app.js" defer></script>
 
 </body>
+
 </html>

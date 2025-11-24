@@ -159,6 +159,8 @@ class AppContext:
         self._ha_error: Optional[str] = None
         self._stat_catalog: list[dict[str, Any]] = []
         self._entity_catalog: list[dict[str, Any]] = []
+        self._control_active: bool = False
+        self._saved_inverter_mode: Optional[Any] = None
         debug_dir_env = os.getenv("DEBUG_DIR")
         self._debug_dir = Path(debug_dir_env).expanduser() if debug_dir_env else None
 
@@ -197,6 +199,23 @@ class AppContext:
             self._scheduler_task = asyncio.create_task(self._scheduler_loop())
         await self.refresh_statistics_catalog()
         await self.refresh_entity_catalog()
+
+    def is_control_active(self) -> bool:
+        return self._control_active
+
+    async def set_control_active(self, active: bool) -> None:
+        if self._control_active == active:
+            return
+        
+        self._control_active = active
+        if active:
+            # TODO: Save current inverter mode from HA
+            self._saved_inverter_mode = "mock_mode" 
+            _LOGGER.info("Automatic control ENABLED. Saved inverter mode: %s", self._saved_inverter_mode)
+        else:
+            # TODO: Restore saved inverter mode to HA
+            _LOGGER.info("Automatic control DISABLED. Restoring inverter mode: %s", self._saved_inverter_mode)
+            self._saved_inverter_mode = None
 
     async def stop(self) -> None:
         if self._scheduler_task:
