@@ -60,8 +60,13 @@ class InverterDriver(ABC):
 class GoodWeDriver(InverterDriver):
     """Driver for GoodWe inverters via Home Assistant integration."""
     
-    id = "goodwe"
-    name = "GoodWe Inverter (Experimental)"
+    @property
+    def id(self) -> str:
+        return "goodwe"
+
+    @property
+    def name(self) -> str:
+        return "GoodWe Inverter (Experimental)"
 
     def get_required_entities(self) -> List[Dict[str, Any]]:
         return [
@@ -123,7 +128,8 @@ class GoodWeDriver(InverterDriver):
             _LOGGER.info("Resetting GoodWe to General mode (control disabled)")
             await ha_client.call_service(
                 "select", "select_option",
-                {"entity_id": mode_entity, "option": "General mode"}
+                {"option": "general"},
+                target={"entity_id": [mode_entity]}
             )
             return
             
@@ -150,14 +156,14 @@ class GoodWeDriver(InverterDriver):
         if battery_charge_kw < MIN_POWER_KW and battery_discharge_kw < MIN_POWER_KW:
             # Battery is idle
             intervention_type = "DISABLE_BATTERY"
-            target_mode = "Eco charge mode"
+            target_mode = "eco_charge"
             target_soc = 0
             target_power_val = 0
             
         elif grid_to_batt > MIN_POWER_KW:
             # Battery is being charged from grid
             intervention_type = "CHARGE_FROM_GRID"
-            target_mode = "Eco charge mode"
+            target_mode = "eco_charge"
             target_soc = 100  # Charge until full
             target_power_pct = min(100, max(0, int((grid_to_batt / max_power) * 100)))
             target_power_val = target_power_pct
@@ -165,7 +171,7 @@ class GoodWeDriver(InverterDriver):
         elif batt_to_grid > MIN_POWER_KW:
             # Battery is discharging to grid
             intervention_type = "DISCHARGE_TO_GRID"
-            target_mode = "Eco discharge mode"
+            target_mode = "eco_discharge"
             target_soc = 0  # Discharge until empty
             discharge_power = batt_to_load + batt_to_grid
             target_power_pct = min(100, max(0, int((discharge_power / max_power) * 100)))
@@ -174,12 +180,12 @@ class GoodWeDriver(InverterDriver):
         elif batt_to_load > MIN_POWER_KW:
             # Battery is covering load (self-consumption)
             intervention_type = "COVER_LOAD"
-            target_mode = "General mode"  # Let inverter manage naturally
+            target_mode = "general"  # Let inverter manage naturally
             
         else:
             # Default: disable battery
             intervention_type = "DISABLE_BATTERY"
-            target_mode = "Eco charge mode"
+            target_mode = "eco_charge"
             target_soc = 0
             target_power_val = 0
 
@@ -189,26 +195,30 @@ class GoodWeDriver(InverterDriver):
             intervention_type, grid_to_batt, batt_to_load, batt_to_grid
         )
         
-        if target_mode == "Eco charge mode" or target_mode == "Eco discharge mode":
+        if target_mode == "eco_charge" or target_mode == "eco_discharge":
             # Set power percentage first
             if target_power_val is not None:
                 await ha_client.call_service(
                     "number", "set_value",
-                    {"entity_id": power_entity, "value": target_power_val}
+                    {"value": target_power_val},
+                    target={"entity_id": [power_entity]}
                 )
             
             # Set SoC limit
             if target_soc is not None:
                 await ha_client.call_service(
                     "number", "set_value",
-                    {"entity_id": soc_entity, "value": target_soc}
+                    {"value": target_soc},
+                    target={"entity_id": [soc_entity]}
                 )
             
             # Set mode last
-            await ha_client.call_service(
+            resp = await ha_client.call_service(
                 "select", "select_option",
-                {"entity_id": mode_entity, "option": target_mode}
+                {"option": target_mode},
+                target={"entity_id": [mode_entity]}
             )
+            _LOGGER.debug("Set mode response: %s", resp)
             
             _LOGGER.info(
                 "GoodWe Control Applied: Mode=%s, Power=%d%%, SoC=%d%%",
@@ -216,10 +226,12 @@ class GoodWeDriver(InverterDriver):
             )
         else:
             # Just set to General mode
-            await ha_client.call_service(
+            resp = await ha_client.call_service(
                 "select", "select_option",
-                {"entity_id": mode_entity, "option": target_mode}
+                {"option": target_mode},
+                target={"entity_id": [mode_entity]}
             )
+            _LOGGER.debug("Set mode response: %s", resp)
             
             _LOGGER.info("GoodWe Control Applied: Mode=%s", target_mode)
 

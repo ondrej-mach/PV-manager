@@ -19,8 +19,7 @@ import pandas as pd
 from energy_forecaster.features.data_prep import PV_COL, TARGET_COL
 from energy_forecaster.io.entsoe import fetch_day_ahead_prices_country, guess_country_code_from_tz
 from energy_forecaster.io.home_assistant import HomeAssistant
-from energy_forecaster.services.baseline_control import BatteryConfig
-from energy_forecaster.services.optimal_control import solve_lp_optimal_control
+from energy_forecaster.services.optimal_control import solve_lp_optimal_control, BatteryConfig
 from energy_forecaster.services.prediction_service import run_prediction_pipeline
 from energy_forecaster.services.training_service import run_training_pipeline
 from .settings import (
@@ -167,6 +166,7 @@ class AppContext:
         self._debug_dir = Path(debug_dir_env).expanduser() if debug_dir_env else None
         self._inverter_manager = InverterManager()
         self._load_inverter_driver_config()
+        self._load_control_state()
 
     async def _call_in_thread(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         loop = asyncio.get_running_loop()
@@ -218,6 +218,9 @@ class AppContext:
             return
         
         self._control_active = active
+        # Save state
+        await self._save_control_state(active)
+        
         if active:
             _LOGGER.info("Automatic control ENABLED.")
             # Apply control immediately based on current forecast plan
@@ -248,6 +251,26 @@ class AppContext:
             # When disabling, reset the inverter to idle state
             if self._ha:
                 await self._inverter_manager.apply_control(self._ha, None)
+
+    async def _save_control_state(self, active: bool) -> None:
+        state_path = self.models_dir.parent / "control_state.json"
+        try:
+            import json
+            data = {"control_active": active}
+            state_path.write_text(json.dumps(data, indent=2))
+        except Exception as exc:
+            _LOGGER.error("Failed to save control state: %s", exc)
+
+    def _load_control_state(self) -> None:
+        state_path = self.models_dir.parent / "control_state.json"
+        if state_path.exists():
+            try:
+                import json
+                data = json.loads(state_path.read_text())
+                self._control_active = bool(data.get("control_active", False))
+                _LOGGER.info("Loaded control state: active=%s", self._control_active)
+            except Exception as exc:
+                _LOGGER.error("Failed to load control state: %s", exc)
 
     def get_inverter_manager(self) -> InverterManager:
         return self._inverter_manager
@@ -285,6 +308,17 @@ class AppContext:
             _LOGGER.error("Failed to save inverter driver config: %s", exc)
 
     async def stop(self) -> None:
+        # Disable control on shutdown to reset inverter to safe state
+        if self._control_active:
+            _LOGGER.info("Shutting down: Disabling automatic control and resetting inverter...")
+            # We don't save state here because we want to remember it was active on next boot
+            # But we do want to physically reset the inverter now.
+            if self._ha:
+                try:
+                    await self._inverter_manager.apply_control(self._ha, None)
+                except Exception as exc:
+                    _LOGGER.error("Failed to reset inverter on shutdown: %s", exc)
+
         if self._scheduler_task:
             self._scheduler_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -389,7 +423,8 @@ class AppContext:
             self._snapshot = snapshot
             self._last_cycle_error = None
             
-        _LOGGER.info("Forecast cycle complete at %s", snapshot.timestamp.isoformat())
+        if snapshot:
+            _LOGGER.info("Forecast cycle complete at %s", snapshot.timestamp.isoformat())
             
         # Apply control if active
         if self._control_active and snapshot and snapshot.plan is not None and not snapshot.plan.empty:
@@ -426,6 +461,18 @@ class AppContext:
         prices_df = fetch_day_ahead_prices_country(country, start=start, end=end, tz=tz)
         prices = prices_df["price_eur_per_kwh"].tz_convert("UTC")
         aligned = prices.reindex(index)
+        
+        # Check if we have enough data for dynamic pricing
+        if aligned.isna().all():
+            # If we are in a dynamic mode, we cannot proceed without spot prices
+            is_dynamic = False
+            if pricing_cfg:
+                if pricing_cfg.import_tariff.mode == "spot_plus_constant" or pricing_cfg.export_tariff.mode == "spot_plus_constant":
+                    is_dynamic = True
+            
+            if is_dynamic:
+                raise ValueError(f"No spot price data available for {country} (ENTSO-E). Cannot run optimization in spot_plus_constant mode.")
+        
         imputed_mask = pd.Series(False, index=index)
         missing_idx = aligned.index[aligned.isna()]
         if len(missing_idx) > 0:
@@ -607,7 +654,7 @@ class AppContext:
         if not new_unit and current.entity_id:
             meta = catalog_map.get(current.entity_id)
             new_unit = meta.get("unit") if meta else None
-            if not new_unit:
+            if not new_unit and self._ha:
                 try:
                     state = await self._call_in_thread(self._ha.get_entity_state_sync, current.entity_id)
                     if state: new_unit = state.get("attributes", {}).get("unit_of_measurement")
@@ -627,7 +674,7 @@ class AppContext:
     async def update_inverter_settings(self, data: Dict[str, Any]) -> dict[str, Any]:
         payload = self._require_mapping(data)
         catalog = await self.refresh_statistics_catalog()
-        catalog_map = {item.get("statistic_id"): item for item in catalog if item.get("statistic_id")}
+        catalog_map: Dict[str, Any] = {str(item.get("statistic_id")): item for item in catalog if item.get("statistic_id")}
 
         changed = False
         catalog_changed = False
@@ -641,15 +688,19 @@ class AppContext:
                     return current, False
                 return await self._update_entity_selection(current, block, catalog_map)
 
-            inverter.house_consumption, changed_house = await _apply("house_consumption", inverter.house_consumption)
-            if changed_house:
-                changed = True
-                catalog_changed = True
+            new_house, changed_house = await _apply("house_consumption", inverter.house_consumption)
+            if new_house is not None:
+                inverter.house_consumption = new_house
+                if changed_house:
+                    changed = True
+                    catalog_changed = True
 
-            inverter.pv_power, changed_pv = await _apply("pv_power", inverter.pv_power)
-            if changed_pv:
-                changed = True
-                catalog_changed = True
+            new_pv, changed_pv = await _apply("pv_power", inverter.pv_power)
+            if new_pv is not None:
+                inverter.pv_power = new_pv
+                if changed_pv:
+                    changed = True
+                    catalog_changed = True
 
             if "export_power_limited" in payload:
                 flag = payload.get("export_power_limited")
@@ -685,8 +736,8 @@ class AppContext:
         payload = self._require_mapping(data)
 
         entities = await self.refresh_entity_catalog()
-        entity_map = {
-            item.get("entity_id"): item
+        entity_map: Dict[str, Any] = {
+            str(item.get("entity_id")): item
             for item in entities
             if isinstance(item, dict) and item.get("category") == "battery" and item.get("entity_id")
         }
@@ -730,6 +781,8 @@ class AppContext:
 
             if "wear_cost_eur_per_kwh" in payload:
                 raw_cost = payload.get("wear_cost_eur_per_kwh")
+                if raw_cost is None:
+                     raise ValueError("wear_cost_eur_per_kwh cannot be null")
                 try:
                     cost_value = float(raw_cost)
                 except (TypeError, ValueError):
@@ -1108,72 +1161,16 @@ class AppContext:
         battery_settings = self._settings.battery
         
         # Fetch prices
-        # We need spot prices for the forecast horizon.
-        # If we have dynamic pricing, we fetch from ENTSO-E or similar.
-        # For now, let's assume we use the configured tariff structure or fetch if needed.
-        # The existing code likely had logic for this.
-        # I'll implement a best-effort price fetching.
-        
         now = datetime.now(timezone.utc)
-        start_time = pv_pred.index[0]
-        end_time = pv_pred.index[-1]
         
-        # Create price series based on settings
-        # This is a simplified reconstruction. The original code might have been more complex.
-        # But `solve_lp_optimal_control` expects prices.
-        
-        # Let's try to fetch spot prices if configured
-        spot_prices = pd.Series(0.0, index=pv_pred.index)
-        if pricing_settings.import_tariff.mode == "dynamic" or pricing_settings.export_tariff.mode == "dynamic":
-             # Try to fetch ENTSO-E prices
-             # We need country code.
-             country_code = guess_country_code_from_tz(self._tz)
-             if country_code:
-                 try:
-                     # Fetch day ahead prices
-                     # We might need to handle caching or fetch for tomorrow too.
-                     # `fetch_day_ahead_prices_country` returns a Series.
-                     # We need to align it with our index.
-                     # This is a bit heavy for a sync method called in a thread, but it's okay.
-                     # Ideally we should pass a session or use async, but this is legacy sync code wrapper.
-                     
-                     # Fetch for today and tomorrow to cover horizon
-                     t_start = start_time.floor("D")
-                     t_end = end_time.ceil("D")
-                     
-                     # This might fail if token is missing.
-                     entsoe_token = os.getenv("ENTSOE_TOKEN")
-                     if entsoe_token:
-                        # We need to call this carefully.
-                        # For now, let's skip external fetch to avoid blocking/errors if not set up,
-                        # and rely on what `solve_lp_optimal_control` might do or just use flat prices if dynamic fails.
-                        pass
-                 except Exception as exc:
-                     _LOGGER.warning("Failed to fetch spot prices: %s", exc)
-
-        # Construct tariff prices
-        # We'll use a helper or just manual construction.
-        # `solve_lp_optimal_control` takes `import_tariff` and `export_tariff` settings directly?
-        # No, it takes `prices_import` and `prices_export` Series.
-        
-        # Let's create dummy price series based on settings for now.
-        # Real implementation would expand the tariff schedule.
-        # Since I don't have the `TariffSettings` expansion logic handy, I'll create flat/simple series.
-        # Wait, `TariffSettings` might have a helper? No, it's a Pydantic model.
-        
-        # I'll implement a simple expansion:
-        # If flat, use flat value.
-        # If dynamic, use 0.0 (placeholder) + formula.
-        
-        def expand_tariff(tariff: TariffSettings, index: pd.DatetimeIndex) -> pd.Series:
-            if tariff.mode == "flat" or tariff.mode == "constant":
-                return pd.Series(tariff.constant_eur_per_kwh or 0.0, index=index)
-            # For dynamic, we need spot prices.
-            # Assuming spot_prices are 0 for now if not fetched.
-            return pd.Series(0.0, index=index) + tariff.spot_offset_eur_per_kwh # Simplified
-            
-        import_price = expand_tariff(pricing_settings.import_tariff, pv_pred.index)
-        export_price = expand_tariff(pricing_settings.export_tariff, pv_pred.index)
+        try:
+            spot_prices, import_price, export_price, price_imputed = self._build_price_series(
+                self._tz, pv_pred.index, pricing_settings
+            )
+        except ValueError as exc:
+            _LOGGER.error("Price data error: %s", exc)
+            # Re-raise to stop the cycle and show error in UI
+            raise
         
         # 3. Run Optimization
         # We need battery config
@@ -1190,9 +1187,11 @@ class AppContext:
             try:
                 state = self._ha.get_entity_state_sync(battery_settings.soc_sensor.entity_id)
                 if state:
-                    val = float(state.get("state"))
-                    # Normalize
-                    initial_soc = self._normalize_soc(val, battery_settings.soc_sensor.unit) or 0.5
+                    raw_state = state.get("state")
+                    if raw_state is not None:
+                        val = float(raw_state)
+                        # Normalize
+                        initial_soc = self._normalize_soc(val, battery_settings.soc_sensor.unit) or 0.5
             except Exception as exc:
                 _LOGGER.warning("Failed to fetch initial SoC: %s", exc)
 
@@ -1231,7 +1230,7 @@ class AppContext:
             price_forecast=import_price, # simplified
             export_price_forecast=export_price,
             spot_price_forecast=spot_prices,
-            price_imputed=pd.Series(False, index=pv_pred.index), # Placeholder
+            price_imputed=price_imputed,
             plan=plan,
             ha_recent=ha_recent,
             summary=summary,
@@ -1311,6 +1310,8 @@ class AppContext:
             return None
 
         raw_value = state.get("state")
+        if raw_value is None:
+            return None
         try:
             numeric = float(raw_value)
         except (TypeError, ValueError):

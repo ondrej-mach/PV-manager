@@ -7,13 +7,11 @@ import logging
 import requests
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
-from typing import List, Tuple, Optional, Dict, Any, Union
+from typing import List, Tuple, Optional, Dict, Any, Union, Sequence
 from urllib.parse import urljoin
 
 import pandas as pd
 import websockets
-from websockets.client import WebSocketClientProtocol
-
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,7 +33,7 @@ class HomeAssistant:
         self.token = token or os.getenv("SUPERVISOR_TOKEN")
         self.ws_url = urljoin(instance_url.replace("http", "ws", 1), "/api/websocket") if instance_url else "ws://supervisor/core/websocket"
         self.rest_url = urljoin(instance_url, "/api") if instance_url else "http://supervisor/core/api"
-        self._ws: Optional[WebSocketClientProtocol] = None
+        self._ws: Any = None
         self._msg_id = 1
         # Background loop and thread for sync facade (persistent connection)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -72,7 +70,7 @@ class HomeAssistant:
         return mapping.get(normalized, period or "1h")
 
     @staticmethod
-    def _normalize_entities_with_types(entities: List[Union[str, Tuple[str, str]]]) -> List[Tuple[str, str]]:
+    def _normalize_entities_with_types(entities: Sequence[Union[str, Tuple[str, str]]]) -> List[Tuple[str, str]]:
         normalized: List[Tuple[str, str]] = []
         for item in entities:
             if isinstance(item, (list, tuple)) and len(item) >= 2 and isinstance(item[0], str):
@@ -273,7 +271,7 @@ class HomeAssistant:
                         self._entity_cache[eid] = entry
         return {entity: self._entity_cache.get(entity) for entity in entity_ids}
         
-    async def _ensure_connected(self) -> WebSocketClientProtocol:
+    async def _ensure_connected(self) -> Any:
         """Ensure WebSocket connection is established and authenticated.
         
         Reuses existing connection if still open, otherwise creates a new one.
@@ -283,6 +281,10 @@ class HomeAssistant:
             # Re-check connection inside the lock in case another coroutine already reconnected
             if self._ws:
                 try:
+                    # Check for modern websockets (v11+) state
+                    if hasattr(self._ws, "state") and getattr(self._ws.state, "name", "") == "OPEN":
+                        return self._ws
+                    # Check for legacy websockets open/closed
                     if hasattr(self._ws, "open") and self._ws.open:
                         return self._ws
                     if hasattr(self._ws, "closed") and not self._ws.closed:
@@ -293,6 +295,8 @@ class HomeAssistant:
             if not self.token:
                 raise RuntimeError("No authentication token available")
 
+            # Ensure we connect using the current event loop
+            # This is critical for asyncio safety when running in different contexts (e.g. uvicorn vs background thread)
             ws = await websockets.connect(self.ws_url)
             await ws.recv()  # auth required message
             await ws.send(json.dumps({"type": "auth", "access_token": self.token}))
@@ -309,7 +313,21 @@ class HomeAssistant:
         
     async def _send_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """Send a message and receive response via WebSocket."""
+        # Ensure we are connected on the current loop
         ws = await self._ensure_connected()
+        
+        # Verify the connection belongs to the current loop to avoid "Future attached to a different loop"
+        # If the connection was created on a different loop, we must reconnect.
+        try:
+            # This is a heuristic check. websockets usually bind to the loop they were created on.
+            # If we can't check, we proceed and let it fail if it must.
+            if hasattr(ws, "loop") and ws.loop is not asyncio.get_running_loop():
+                _LOGGER.warning("WebSocket connection belongs to a different loop. Reconnecting...")
+                self._ws = None
+                ws = await self._ensure_connected()
+        except Exception:
+            pass
+
         lock = self._get_lock_for_loop("_ws_lock", "_ws_lock_loop")
         async with lock:
             if "id" not in message:
@@ -785,6 +803,8 @@ class HomeAssistant:
     def connect_sync(self, timeout: Optional[float] = None) -> None:
         """Start background loop and connect (authenticate) synchronously."""
         self._start_background_loop()
+        if self._loop is None:
+            raise RuntimeError("Failed to start background loop")
         fut = asyncio.run_coroutine_threadsafe(self._ensure_connected(), self._loop)
         return fut.result(timeout)
 

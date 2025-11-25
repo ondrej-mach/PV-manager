@@ -331,7 +331,7 @@ function renderIntervention(intervention, fallbackText) {
     classes.forEach((cls) => el.classList.remove(cls));
 
     if (!intervention || !intervention.type) {
-        const text = fallbackText || 'Current intervention: Waiting for forecast…';
+        const text = fallbackText || 'Current intervention: Not available';
         el.classList.add('none');
         el.innerHTML = text;
         el.style.display = 'block';
@@ -1492,7 +1492,7 @@ function applyStatus(payload) {
         if (payload.last_cycle_error) {
             renderIntervention(null, `Forecast error: ${payload.last_cycle_error}`);
         } else {
-            renderIntervention(null, 'Current intervention: Waiting for forecast…');
+            renderIntervention(null, 'Current intervention: Not available');
         }
     } else {
         if (summaryWindowEl) {
@@ -2306,7 +2306,7 @@ window.addEventListener('DOMContentLoaded', () => {
     loadSettingsData();
     loadControlSettings();
     updateViewMode();
-    renderIntervention(null, 'Current intervention: Waiting for forecast…');
+    renderIntervention(null, 'Current intervention: Not available');
     activateSettingsTab('inverter');
 
     const controlSwitch = document.getElementById('controlSwitch');

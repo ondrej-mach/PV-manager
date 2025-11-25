@@ -549,7 +549,7 @@
         <section class="card">
             <h2>Optimization Plan</h2>
             <canvas id="planChart" height="320"></canvas>
-            <div id="interventionBanner" class="intervention-banner none">Current intervention: Waiting for forecast…</div>
+            <div id="interventionBanner" class="intervention-banner none">Current intervention: Not available</div>
         </section>
 
         <section class="card">
@@ -1217,11 +1217,11 @@
                 label.textContent = 'Service online';
             } else if (!haError) {
                 dot.classList.remove('ok');
-                label.textContent = 'Waiting for forecast…';
+                label.textContent = 'Not available';
                 if (summaryWindowEl) {
                     summaryWindowEl.textContent = '';
                 }
-                renderIntervention(null, 'Current intervention: Waiting for forecast…');
+                renderIntervention(null, 'Current intervention: Not available');
             } else {
                 dot.classList.remove('ok');
                 label.textContent = 'Home Assistant unavailable';
@@ -1716,7 +1716,7 @@
             refreshForecast();
             loadSettingsData();
             updateViewMode();
-            renderIntervention(null, 'Current intervention: Waiting for forecast…');
+            renderIntervention(null, 'Current intervention: Not available');
             activateSettingsTab('inverter');
 
             setInterval(() => {
