@@ -756,3 +756,113 @@ button.primary {
         text-align: center;
     }
 }
+/* Driver Entity Mapping Table */
+.driver-entity-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+}
+
+.driver-entity-table th,
+.driver-entity-table td {
+    padding: 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.driver-entity-table th {
+    background-color: #f9fafb;
+    font-weight: 600;
+    color: #374151;
+}
+
+.driver-entity-table tr:hover {
+    background-color: #f3f4f6;
+}
+
+.driver-entity-input {
+    width: 100%;
+    padding: 0.5rem;
+    border: 2px solid #d1d5db;
+    border-radius: 0.375rem;
+    font-family: 'Courier New', monospace;
+    font-size: 0.875rem;
+    transition: border-color 0.2s, background-color 0.2s;
+}
+
+.driver-entity-input:focus {
+    outline: none;
+    border-color: #3b82f6;
+}
+
+/* Validation colors */
+.driver-entity-input.valid-default {
+    border-color: #3b82f6;
+    background-color: #eff6ff;
+}
+
+.driver-entity-input.valid-custom {
+    border-color: #10b981;
+    background-color: #f0fdf4;
+}
+
+.driver-entity-input.invalid {
+    border-color: #ef4444;
+    background-color: #fef2f2;
+}
+
+.driver-entity-domain {
+    color: #6b7280;
+    font-family: 'Courier New', monospace;
+    font-size: 0.875rem;
+}
+
+/* Driver Entity Button */
+.driver-entity-button {
+    width: 100%;
+    padding: 0.5rem;
+    border: 2px solid #d1d5db;
+    border-radius: 0.375rem;
+    background: white;
+    font-family: 'Courier New', monospace;
+    font-size: 0.875rem;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.2s, background-color 0.2s;
+}
+
+.driver-entity-button:hover {
+    background-color: #f9fafb;
+}
+
+.driver-entity-button:focus {
+    outline: none;
+    border-color: #3b82f6;
+}
+
+/* Validation colors for button */
+.driver-entity-button.valid-default {
+    border-color: #3b82f6;
+    background-color: #eff6ff;
+}
+
+.driver-entity-button.valid-custom {
+    border-color: #10b981;
+    background-color: #f0fdf4;
+}
+
+.driver-entity-button.invalid {
+    border-color: #ef4444;
+    background-color: #fef2f2;
+    color: #991b1b;
+}
+
+/* Disabled control switch */
+.toggle-switch[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.toggle-switch[disabled] .toggle-switch-slider {
+    background-color: #9ca3af;
+}

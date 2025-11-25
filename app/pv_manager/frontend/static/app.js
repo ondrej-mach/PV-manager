@@ -330,66 +330,36 @@ function renderIntervention(intervention, fallbackText) {
     const classes = ['none', 'charge', 'discharge', 'limit'];
     classes.forEach((cls) => el.classList.remove(cls));
 
-    if (!intervention) {
-        const text = fallbackText || 'Current intervention: Eco mode';
+    if (!intervention || !intervention.type) {
+        const text = fallbackText || 'Current intervention: Waiting for forecast…';
         el.classList.add('none');
         el.innerHTML = text;
         el.style.display = 'block';
         return;
     }
 
-    const mode = intervention.mode || 'none';
-    const power = Number(intervention.power_kw);
-    const price = Number(intervention.price_eur_per_kwh);
-    const soc = Number(intervention.soc);
-    const reason = typeof intervention.reason === 'string' ? intervention.reason.trim() : '';
+    const type = intervention.type;
+    const description = intervention.description || '';
 
-    let mainText = 'Current intervention: Eco mode';
+    let mainText = `Current intervention: ${type}`;
     let modeClass = 'none';
 
-    if (mode === 'charge') {
-        if (Number.isFinite(power) && power > 0.05) {
-            mainText = `Current intervention: Charge battery at ${numberFmt1.format(power)} kW`;
-        } else {
-            mainText = 'Current intervention: Charge battery';
-        }
+    // Map intervention types to CSS classes
+    if (type === 'Charge from Grid') {
         modeClass = 'charge';
-    } else if (mode === 'discharge') {
-        if (Number.isFinite(power) && power > 0.05) {
-            mainText = `Current intervention: Discharge battery at ${numberFmt1.format(power)} kW`;
-        } else {
-            mainText = 'Current intervention: Discharge battery';
-        }
+    } else if (type === 'Discharge to Grid') {
         modeClass = 'discharge';
-    } else if (mode === 'limit_export') {
-        if (Number.isFinite(power) && power > 0.05) {
-            mainText = `Current intervention: Limit grid export to ${numberFmt1.format(power)} kW`;
-        } else {
-            mainText = 'Current intervention: Limit grid export';
-        }
-        modeClass = 'limit';
-    } else {
-        if (fallbackText) {
-            mainText = fallbackText;
-        }
+    } else if (type === 'Cover Load from Battery') {
+        modeClass = 'discharge'; // Use same color as discharge
+    } else if (type === 'Disable Battery') {
         modeClass = 'none';
-    }
-
-    const detailParts = [];
-    if (modeClass !== 'none' && Number.isFinite(price)) {
-        detailParts.push(`${currencyFmt.format(price)} / kWh`);
-    }
-    if (modeClass !== 'none' && Number.isFinite(soc)) {
-        detailParts.push(`SoC ${numberFmt2.format(soc * 100)} %`);
-    }
-    if (reason) {
-        detailParts.push(reason);
     }
 
     el.classList.add(modeClass);
     el.style.display = 'block';
-    if (detailParts.length) {
-        el.innerHTML = `${mainText}<span class="detail">${detailParts.join(' • ')}</span>`;
+
+    if (description) {
+        el.innerHTML = `${mainText}<span class="detail">${description}</span>`;
     } else {
         el.innerHTML = mainText;
     }
@@ -1360,16 +1330,35 @@ function matchesEntity(item, term) {
 function renderEntityList(searchTerm) {
     if (!entityListContainer) return;
     const term = (searchTerm || '').trim().toLowerCase();
-    const catalog = entityModalTarget === 'battery_soc' ? batteryEntityCatalog : powerEntityCatalog;
-    const items = catalog.filter((item) => matchesEntity(item, term));
+    let catalog = [];
+    let filterByDomain = null;
+
+    if (entityModalTarget === 'battery_soc') {
+        catalog = batteryEntityCatalog;
+    } else if (entityModalTarget === 'DRIVER_CONFIG') {
+        // For driver config, use full entity catalog and filter by domain
+        catalog = entityCatalog;
+        filterByDomain = activeDriverEntityDomain; // e.g., 'select', 'number', 'sensor'
+    } else {
+        catalog = powerEntityCatalog;
+    }
+
+    // Filter by search term and domain if applicable
+    let items = catalog.filter((item) => matchesEntity(item, term));
+    if (filterByDomain) {
+        items = items.filter((item) => item.entity_id.startsWith(filterByDomain + '.'));
+    }
+
     entityListContainer.textContent = '';
     if (!items.length) {
         const empty = document.createElement('div');
         empty.className = 'entity-empty';
         if (term) {
-            empty.textContent = 'No matching sensors found.';
+            empty.textContent = `No matching ${filterByDomain || 'entities'} found.`;
         } else if (entityModalTarget === 'battery_soc') {
             empty.textContent = 'No battery sensors available.';
+        } else if (filterByDomain) {
+            empty.textContent = `No ${filterByDomain} entities available.`;
         } else {
             empty.textContent = 'No power sensors available.';
         }
@@ -1378,19 +1367,31 @@ function renderEntityList(searchTerm) {
     }
     let current = null;
 
-    // Add None option
+    // Add "Clear" or "Use Default" option
     const noneOption = document.createElement('button');
     noneOption.type = 'button';
     noneOption.className = 'entity-option';
     noneOption.setAttribute('role', 'option');
-    noneOption.innerHTML = `
-        <span class="entity-name">None</span>
-        <span class="entity-meta">Clear selection</span>
-    `;
+
+    if (entityModalTarget === 'DRIVER_CONFIG' && activeDriverEntityDefault) {
+        noneOption.innerHTML = `
+            <span class="entity-name">Use Default</span>
+            <span class="entity-meta">${activeDriverEntityDefault}</span>
+        `;
+    } else {
+        noneOption.innerHTML = `
+            <span class="entity-name">None</span>
+            <span class="entity-meta">Clear selection</span>
+        `;
+    }
+
+    // Handle click
     noneOption.addEventListener('click', () => {
         const targetKey = entityModalTarget;
         closeEntityModal();
-        if (targetKey === 'battery_soc') {
+        if (targetKey === 'DRIVER_CONFIG') {
+            if (activeDriverEntityCallback) activeDriverEntityCallback(null);
+        } else if (targetKey === 'battery_soc') {
             updateBatterySelection(null);
         } else if (targetKey) {
             updateInverterSelection(targetKey, null);
@@ -1419,7 +1420,9 @@ function renderEntityList(searchTerm) {
         option.addEventListener('click', () => {
             const targetKey = entityModalTarget;
             closeEntityModal();
-            if (targetKey === 'battery_soc') {
+            if (targetKey === 'DRIVER_CONFIG') {
+                if (activeDriverEntityCallback) activeDriverEntityCallback(item.entity_id);
+            } else if (targetKey === 'battery_soc') {
                 updateBatterySelection(item.entity_id);
             } else if (targetKey) {
                 updateInverterSelection(targetKey, item.entity_id);
@@ -1464,10 +1467,19 @@ function applyStatus(payload) {
     const controlSwitch = document.getElementById('controlSwitch');
     if (controlSwitch) {
         controlSwitch.setAttribute('aria-checked', String(Boolean(payload.control_active)));
+
+        // Check if driver is configured
+        const hasDriver = payload.driver_configured !== false; // Default to true if not provided
+
         if (haError) {
             controlSwitch.setAttribute('disabled', 'disabled');
+            controlSwitch.setAttribute('title', 'Cannot enable: Home Assistant not connected');
+        } else if (!hasDriver) {
+            controlSwitch.setAttribute('disabled', 'disabled');
+            controlSwitch.setAttribute('title', 'Cannot enable: No inverter driver configured. Go to Settings > Inverter Control to configure.');
         } else {
             controlSwitch.removeAttribute('disabled');
+            controlSwitch.setAttribute('title', 'Toggle automatic inverter control');
         }
     }
 
@@ -1477,7 +1489,11 @@ function applyStatus(payload) {
         if (summaryWindowEl) {
             summaryWindowEl.textContent = '';
         }
-        renderIntervention(null, 'Current intervention: Waiting for forecast…');
+        if (payload.last_cycle_error) {
+            renderIntervention(null, `Forecast error: ${payload.last_cycle_error}`);
+        } else {
+            renderIntervention(null, 'Current intervention: Waiting for forecast…');
+        }
     } else {
         if (summaryWindowEl) {
             summaryWindowEl.textContent = '';
@@ -1850,10 +1866,10 @@ function applyForecast(payload) {
         borderDash: (ctx) => (segmentImputed(ctx) ? [6, 4] : []),
     };
     const imputedRadiusValues = labels.map((_, idx) => (priceImputedFlags[idx] ? 2 : 0));
-    planChart.data.datasets[0].pointRadius = imputedRadiusValues;
-    planChart.data.datasets[1].pointRadius = imputedRadiusValues;
-    planChart.data.datasets[0].pointHoverRadius = imputedRadiusValues;
-    planChart.data.datasets[1].pointHoverRadius = imputedRadiusValues;
+    planChart.data.datasets[0].pointRadius = 0;
+    planChart.data.datasets[1].pointRadius = 0;
+    planChart.data.datasets[0].pointHoverRadius = 0;
+    planChart.data.datasets[1].pointHoverRadius = 0;
     planChart.data.datasets[0].pointBackgroundColor = labels.map(() => '#f97316');
     planChart.data.datasets[1].pointBackgroundColor = labels.map(() => '#2563eb');
     planChart.data.datasets[2].pointRadius = 0;
@@ -1895,6 +1911,260 @@ async function refreshStatus() {
         dot.classList.remove('ok');
         label.textContent = 'Failed to reach API';
         errorEl.textContent = err instanceof Error ? err.message : String(err);
+    }
+}
+
+// --- Inverter Control Logic ---
+
+let availableDrivers = [];
+let currentDriverConfig = {};
+
+async function loadControlSettings() {
+    try {
+        const [driversPayload, configPayload] = await Promise.all([
+            fetchJson('/api/drivers'),
+            fetchJson('/api/settings/inverter-driver')
+        ]);
+        availableDrivers = driversPayload.drivers;
+        currentDriverConfig = configPayload || {};
+        renderControlForm();
+    } catch (err) {
+        console.error("Failed to load control settings:", err);
+        const msg = document.getElementById('controlMessage');
+        if (msg) {
+            msg.textContent = "Failed to load settings: " + err.message;
+            msg.style.display = 'block';
+            msg.classList.add('error');
+        }
+    }
+}
+
+function renderControlForm() {
+    const select = document.getElementById('driverSelect');
+    if (!select) return;
+
+    select.innerHTML = '<option value="">Select a driver...</option>';
+    availableDrivers.forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d.id;
+        opt.textContent = d.name;
+        select.appendChild(opt);
+    });
+
+    if (currentDriverConfig.driver_id) {
+        select.value = currentDriverConfig.driver_id;
+    }
+
+    renderDriverConfigFields();
+
+    select.removeEventListener('change', renderDriverConfigFields);
+    select.addEventListener('change', renderDriverConfigFields);
+}
+
+function renderDriverConfigFields() {
+    const select = document.getElementById('driverSelect');
+    const container = document.getElementById('driverConfigContainer');
+    if (!select || !container) return;
+
+    const driverId = select.value;
+    container.innerHTML = '';
+
+    if (!driverId) return;
+
+    const driver = availableDrivers.find(d => d.id === driverId);
+    if (!driver) return;
+
+    // Entity Mapping
+    if (driver.required_entities && driver.required_entities.length > 0) {
+        const entityHeader = document.createElement('h4');
+        entityHeader.textContent = "Entity Mapping";
+        container.appendChild(entityHeader);
+
+        const table = document.createElement('table');
+        table.className = 'driver-entity-table';
+        table.innerHTML = `
+            <thead>
+                <tr>
+                    <th>Required Entity</th>
+                    <th>Domain</th>
+                    <th>Entity ID</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        `;
+
+        const tbody = table.querySelector('tbody');
+
+        driver.required_entities.forEach(entityObj => {
+            const row = document.createElement('tr');
+
+            // Label cell
+            const labelCell = document.createElement('td');
+            labelCell.textContent = entityObj.label || entityObj.key.replace(/_/g, ' ');
+            row.appendChild(labelCell);
+
+            // Domain cell (moved before Entity ID)
+            const domainCell = document.createElement('td');
+            domainCell.textContent = entityObj.domain;
+            domainCell.className = 'driver-entity-domain';
+            row.appendChild(domainCell);
+
+            // Entity ID cell (now clickable button)
+            const entityCell = document.createElement('td');
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'driver-entity-button';
+
+            const currentVal = currentDriverConfig.entity_map ? currentDriverConfig.entity_map[entityObj.key] : null;
+            const displayValue = currentVal || entityObj.default || 'Click to select...';
+            button.textContent = displayValue;
+            button.dataset.default = entityObj.default || '';
+
+            // Validation and color coding
+            const validateEntity = (val) => {
+                button.classList.remove('valid-default', 'valid-custom', 'invalid');
+
+                if (!val || val === 'Click to select...') {
+                    button.classList.add('invalid');
+                    return;
+                }
+
+                // Check if entity exists in catalog
+                const exists = entityCatalog.some(e => e.entity_id === val);
+                const matchesDomain = val.startsWith(entityObj.domain + '.');
+
+                if (exists && matchesDomain) {
+                    // Check if this is still the default value (not changed from saved state)
+                    const savedVal = currentDriverConfig.entity_map ? currentDriverConfig.entity_map[entityObj.key] : null;
+                    const isUsingDefault = !savedVal && val === entityObj.default;
+
+                    if (isUsingDefault || val === entityObj.default) {
+                        button.classList.add('valid-default'); // Blue
+                    } else {
+                        button.classList.add('valid-custom'); // Green
+                    }
+                } else {
+                    button.classList.add('invalid'); // Red
+                }
+            };
+
+            button.onclick = () => {
+                openEntityModalForDriver(entityObj.key, entityObj.domain, entityObj.default, (selectedId) => {
+                    button.textContent = selectedId || entityObj.default || 'Click to select...';
+                    if (!currentDriverConfig.entity_map) currentDriverConfig.entity_map = {};
+                    currentDriverConfig.entity_map[entityObj.key] = selectedId;
+                    validateEntity(selectedId || entityObj.default);
+                });
+            };
+
+            // Initial validation
+            validateEntity(displayValue);
+
+            entityCell.appendChild(button);
+            row.appendChild(entityCell);
+
+            tbody.appendChild(row);
+        });
+
+        container.appendChild(table);
+    }
+
+    // Driver Config
+    if (driver.config_schema && Object.keys(driver.config_schema).length > 0) {
+        const configHeader = document.createElement('h4');
+        configHeader.textContent = "Driver Configuration";
+        container.appendChild(configHeader);
+
+        driver.config_schema.forEach(schemaItem => {
+            const key = schemaItem.key;
+            const type = schemaItem.type;
+
+            const field = document.createElement('div');
+            field.className = 'field';
+
+            const label = document.createElement('label');
+            label.textContent = schemaItem.label || key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+            field.appendChild(label);
+
+            const input = document.createElement('input');
+            // Basic type mapping
+            if (type === 'float' || type === 'int') {
+                input.type = 'number';
+                input.step = type === 'float' ? '0.1' : '1';
+            } else {
+                input.type = 'text';
+            }
+
+            const val = currentDriverConfig.config ? currentDriverConfig.config[key] : '';
+            // Use default if value is not set
+            const displayVal = val !== undefined && val !== '' ? val : (schemaItem.default !== undefined ? schemaItem.default : '');
+            input.value = displayVal;
+
+            input.onchange = (e) => {
+                if (!currentDriverConfig.config) currentDriverConfig.config = {};
+                let v = e.target.value;
+                if (type === 'float') v = parseFloat(v);
+                if (type === 'int') v = parseInt(v, 10);
+                currentDriverConfig.config[key] = v;
+            };
+
+            field.appendChild(input);
+            container.appendChild(field);
+        });
+    }
+}
+
+// Helper to bridge the existing entity modal
+let activeDriverEntityCallback = null;
+let activeDriverEntityDomain = null;
+let activeDriverEntityDefault = null;
+
+function openEntityModalForDriver(entityKey, domain, defaultValue, callback) {
+    activeDriverEntityCallback = callback;
+    activeDriverEntityDomain = domain; // Store the domain filter
+    activeDriverEntityDefault = defaultValue; // Store default value
+    openEntityModal('DRIVER_CONFIG');
+}
+
+// We need to hook into `selectEntity` or `updateEntitySelection` to handle our callback.
+// Since we can't easily modify those without replacing them, let's look at where they are.
+// They are not in the viewed range. I will assume I can modify `selectEntity` or `updateEntitySelection` later.
+// For now, let's assume I can add a check in `updateEntitySelection`.
+
+async function saveControlSettings() {
+    const select = document.getElementById('driverSelect');
+    const driverId = select.value;
+    if (!driverId) return;
+
+    const btn = document.getElementById('saveControlBtn');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+
+    const msg = document.getElementById('controlMessage');
+    msg.style.display = 'none';
+    msg.classList.remove('error', 'success');
+
+    try {
+        await fetchJson('/api/settings/inverter-driver', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                driver_id: driverId,
+                entity_map: currentDriverConfig.entity_map || {},
+                config: currentDriverConfig.config || {}
+            })
+        });
+        msg.textContent = 'Settings saved successfully.';
+        msg.classList.add('success');
+        msg.style.display = 'block';
+    } catch (err) {
+        msg.textContent = 'Failed to save: ' + err.message;
+        msg.classList.add('error');
+        msg.style.display = 'block';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
     }
 }
 
@@ -2031,7 +2301,10 @@ window.addEventListener('DOMContentLoaded', () => {
 
     renderPricingForm();
     refreshAll();
+    renderPricingForm();
+    refreshAll();
     loadSettingsData();
+    loadControlSettings();
     updateViewMode();
     renderIntervention(null, 'Current intervention: Waiting for forecast…');
     activateSettingsTab('inverter');
@@ -2039,25 +2312,41 @@ window.addEventListener('DOMContentLoaded', () => {
     const controlSwitch = document.getElementById('controlSwitch');
     if (controlSwitch) {
         controlSwitch.addEventListener('click', async (e) => {
-            // Toggle current state
-            const current = controlSwitch.getAttribute('aria-checked') === 'true';
-            const active = !current;
+            e.preventDefault();
+            const currentState = controlSwitch.getAttribute('aria-checked') === 'true';
+            const newState = !currentState;
 
-            // Optimistic update
-            controlSwitch.setAttribute('aria-checked', String(active));
+            // If enabling, check if driver is configured
+            if (newState) {
+                try {
+                    const driverResp = await fetch('/api/settings/inverter-driver');
+                    const driverConfig = await driverResp.json();
+
+                    if (!driverConfig || !driverConfig.driver_id) {
+                        alert('Error: No inverter driver configured. Please configure a driver in Settings > Inverter Control before enabling automatic control.');
+                        return;
+                    }
+                } catch (err) {
+                    console.error('Failed to check driver configuration:', err);
+                    alert('Error: Could not verify driver configuration. Please configure a driver in Settings > Inverter Control.');
+                    return;
+                }
+            }
 
             try {
-                const response = await fetchJson('/api/control', {
+                const response = await fetch('/api/control', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ active }),
+                    body: JSON.stringify({ active: newState })
                 });
-                controlSwitch.setAttribute('aria-checked', String(response.active));
+                if (response.ok) {
+                    controlSwitch.setAttribute('aria-checked', newState.toString());
+                    fetchStatus();
+                } else {
+                    console.error('Failed to toggle control');
+                }
             } catch (err) {
-                console.error('Failed to toggle control:', err);
-                // Revert on error
-                controlSwitch.setAttribute('aria-checked', String(current));
-                setInverterMessage(`Failed to toggle control: ${err.message}`, 'error');
+                console.error('Error toggling control:', err);
             }
         });
     }

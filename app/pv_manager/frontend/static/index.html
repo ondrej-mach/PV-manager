@@ -99,6 +99,7 @@
                     <button type="button" data-settings-tab="pv">PV System</button>
                     <button type="button" data-settings-tab="prices">Energy Prices</button>
                     <button type="button" data-settings-tab="loads">Flexible Loads</button>
+                    <button type="button" data-settings-tab="control">Inverter Control</button>
                 </nav>
                 <div class="settings-content">
                     <div data-settings-panel="inverter" class="settings-panel active">
@@ -117,6 +118,24 @@
                                 <p class="hint" id="houseHint">Waiting for Home Assistant…</p>
                             </div>
                             <p class="message" id="inverterMessage" style="display:none;"></p>
+                        </form>
+                    </div>
+                    <div data-settings-panel="control" class="settings-panel">
+                        <h3>Inverter Control</h3>
+                        <p class="message">Configure how the add-on controls your inverter. Select a driver and map the
+                            required entities.</p>
+                        <form id="controlForm" class="settings-form" autocomplete="off">
+                            <div class="field">
+                                <label for="driverSelect">Inverter Driver</label>
+                                <select id="driverSelect">
+                                    <option value="">Select a driver...</option>
+                                </select>
+                            </div>
+                            <div id="driverConfigContainer"></div>
+                            <p class="message" id="controlMessage" style="display:none;"></p>
+                            <div class="actions">
+                                <button type="button" id="saveControlBtn" class="primary">Save Configuration</button>
+                            </div>
                         </form>
                     </div>
                     <div data-settings-panel="battery" class="settings-panel">

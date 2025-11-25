@@ -318,6 +318,25 @@ class HomeAssistant:
 
             await ws.send(json.dumps(message))
             return json.loads(await ws.recv())
+
+    async def call_service(
+        self,
+        domain: str,
+        service: str,
+        service_data: Optional[Dict[str, Any]] = None,
+        target: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Call a Home Assistant service."""
+        msg = {
+            "type": "call_service",
+            "domain": domain,
+            "service": service,
+            "service_data": service_data or {},
+        }
+        if target:
+            msg["target"] = target
+            
+        return await self._send_message(msg)
         
     async def fetch_config_async(self) -> Optional[Dict]:
         """Fetch Home Assistant core configuration including location and timezone."""
@@ -672,9 +691,10 @@ class HomeAssistant:
         }
 
         try:
-            with requests.get(history_url, headers=headers, params=params, timeout=30) as resp:
-                resp.raise_for_status()
-                payload = resp.json()
+            with requests.Session() as session:
+                with session.get(history_url, headers=headers, params=params, timeout=30) as resp:
+                    resp.raise_for_status()
+                    payload = resp.json()
         except Exception as exc:
             _LOGGER.error("Failed to download Home Assistant history: %s", exc)
             raise

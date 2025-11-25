@@ -1,0 +1,12 @@
+{
+  "driver_id": "goodwe",
+  "entity_map": {
+    "operation_mode": "select.goodwe_inverter_operation_mode",
+    "eco_mode_power": "number.goodwe_eco_mode_power",
+    "eco_mode_soc": "number.goodwe_eco_mode_soc",
+    "active_power": "sensor.active_power"
+  },
+  "config": {
+    "max_power_kw": 9.6
+  }
+}

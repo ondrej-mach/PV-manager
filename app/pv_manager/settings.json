@@ -15,7 +15,7 @@
       "entity_id": "sensor.battery_state_of_charge",
       "unit": "%"
     },
-    "wear_cost_eur_per_kwh": 0.1,
+    "wear_cost_eur_per_kwh": 0.07,
     "capacity_kwh": 7.68,
     "power_limit_kw": 8.0,
     "soc_min": 0.1,
@@ -24,19 +24,19 @@
   "pricing": {
     "import": {
       "mode": "spot_plus_constant",
-      "constant_eur_per_kwh": null,
+      "constant_eur_per_kwh": 0.0,
       "spot_offset_eur_per_kwh": 0.14,
-      "dual_peak_eur_per_kwh": null,
-      "dual_offpeak_eur_per_kwh": null,
+      "dual_peak_eur_per_kwh": 0.0,
+      "dual_offpeak_eur_per_kwh": 0.0,
       "dual_peak_start_local": "07:00",
       "dual_peak_end_local": "21:00"
     },
     "export": {
       "mode": "spot_plus_constant",
-      "constant_eur_per_kwh": null,
+      "constant_eur_per_kwh": 0.0,
       "spot_offset_eur_per_kwh": 0.0,
-      "dual_peak_eur_per_kwh": null,
-      "dual_offpeak_eur_per_kwh": null,
+      "dual_peak_eur_per_kwh": 0.0,
+      "dual_offpeak_eur_per_kwh": 0.0,
       "dual_peak_start_local": "07:00",
       "dual_peak_end_local": "21:00"
     }

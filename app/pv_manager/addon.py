@@ -27,6 +27,9 @@ def _build_router(ctx: AppContext) -> APIRouter:
     @router.get("/api/status")
     async def get_status() -> JSONResponse:
         ha_error = ctx.get_ha_error()
+        inverter_manager = ctx.get_inverter_manager()
+        driver_configured = inverter_manager.get_active_driver_id() is not None
+        
         payload: dict[str, Any] = {
             "ok": ha_error is None,
             "snapshot_available": False,
@@ -34,6 +37,8 @@ def _build_router(ctx: AppContext) -> APIRouter:
             "home_assistant_error": ha_error,
             "cycle_running": ctx.is_cycle_running(),
             "control_active": ctx.is_control_active(),
+            "driver_configured": driver_configured,
+            "last_cycle_error": ctx.get_last_cycle_error(),
         }
 
         snapshot = await ctx.get_snapshot()
@@ -94,6 +99,36 @@ def _build_router(ctx: AppContext) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         return JSONResponse(updated)
+
+    @router.get("/api/drivers")
+    async def get_drivers() -> JSONResponse:
+        manager = ctx.get_inverter_manager()
+        drivers = []
+        for d in manager.get_drivers():
+            drivers.append({
+                "id": d.id,
+                "name": d.name,
+                "required_entities": d.get_required_entities(),
+                "config_schema": d.get_config_schema(),
+            })
+        return JSONResponse({"drivers": drivers})
+
+    @router.get("/api/settings/inverter-driver")
+    async def get_inverter_driver_config() -> JSONResponse:
+        manager = ctx.get_inverter_manager()
+        return JSONResponse(manager.get_config())
+
+    @router.post("/api/settings/inverter-driver")
+    async def save_inverter_driver_config(payload: dict[str, Any]) -> JSONResponse:
+        driver_id = payload.get("driver_id")
+        entity_map = payload.get("entity_map", {})
+        config = payload.get("config", {})
+        
+        if not driver_id:
+             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing driver_id")
+             
+        await ctx.save_inverter_driver_config(driver_id, entity_map, config)
+        return JSONResponse({"status": "ok"})
 
 
     return router
