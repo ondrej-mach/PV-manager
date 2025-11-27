@@ -1,32 +1,65 @@
+/* ==========================================================================
+   Variables & Theme
+   ========================================================================== */
 :root {
     color-scheme: light dark;
     font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+    /* Palette */
+    --color-primary: #2563eb;
+    --color-success: #10b981;
+    --color-warning: #f97316;
+    --color-error: #dc2626;
+    
+    /* Semantic Colors */
     --bg-color: var(--ha-card-background, #f7f7f7);
     --text-color: var(--primary-text-color, #1f1f1f);
+    
     --card-bg: var(--card-background-color, #ffffff);
     --card-shadow: rgba(0, 0, 0, 0.06);
-    --border-color: rgba(37, 99, 235, 0.45);
-    --muted-text-color: rgba(15, 23, 42, 0.6);
-    --secondary-text-color: rgba(30, 41, 59, 0.75);
+    
+    --border-color: rgba(148, 163, 184, 0.35);
+    --border-focus: var(--color-primary);
+    
+    --text-muted: rgba(15, 23, 42, 0.6);
+    --text-secondary: rgba(30, 41, 59, 0.75);
+    
+    /* Component Specific */
+    --bg-subtle: rgba(148, 163, 184, 0.12);
+    --bg-hover: rgba(148, 163, 184, 0.22);
+    
+    --input-bg: var(--card-bg);
+    --input-border: var(--border-color);
 }
 
 @media (prefers-color-scheme: dark) {
     :root {
         --bg-color: var(--ha-card-background, #111827);
         --text-color: var(--primary-text-color, #f9fafb);
+        
         --card-bg: var(--card-background-color, #1f2937);
         --card-shadow: rgba(0, 0, 0, 0.35);
-        --border-color: rgba(96, 165, 250, 0.65);
-        --muted-text-color: rgba(248, 250, 252, 0.92);
-        --secondary-text-color: rgba(226, 232, 240, 0.88);
+        
+        --border-color: rgba(148, 163, 184, 0.25);
+        
+        --text-muted: rgba(248, 250, 252, 0.92);
+        --text-secondary: rgba(226, 232, 240, 0.88);
     }
 }
 
+/* ==========================================================================
+   Base & Layout
+   ========================================================================== */
 body {
     margin: 0;
     padding: clamp(1.5rem, 3vw, 2.5rem);
     background: var(--bg-color);
     color: var(--text-color);
+}
+
+main {
+    max-width: 960px;
+    margin: 0 auto;
 }
 
 header {
@@ -48,11 +81,6 @@ h1 {
     margin: 0;
 }
 
-main {
-    max-width: 960px;
-    margin: 0 auto;
-}
-
 .view {
     display: flex;
     flex-direction: column;
@@ -70,6 +98,54 @@ main {
     box-shadow: 0 6px 16px var(--card-shadow);
 }
 
+.card h2 {
+    margin: 0 0 0.5rem;
+    font-size: clamp(1.25rem, 1.8vw, 1.5rem);
+}
+
+/* ==========================================================================
+   Components
+   ========================================================================== */
+
+/* --- Buttons --- */
+button {
+    all: unset;
+    cursor: pointer;
+    border-radius: 8px;
+    padding: 0.5rem 1.05rem;
+    font-weight: 600;
+    border: 1px solid var(--border-color);
+    background: var(--bg-subtle);
+    color: inherit;
+    transition: background 120ms ease, border-color 120ms ease;
+    box-sizing: border-box;
+    text-align: center;
+}
+
+button:hover,
+button:focus {
+    outline: none;
+    border-color: var(--border-focus);
+    background: var(--bg-hover);
+}
+
+button.secondary {
+    background: rgba(15, 23, 42, 0.04);
+}
+
+button.primary {
+    background: rgba(37, 99, 235, 0.12);
+    border-color: rgba(37, 99, 235, 0.45);
+}
+
+.actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+/* --- Charts --- */
 .chart-container {
     position: relative;
     width: 100%;
@@ -104,22 +180,23 @@ main {
     margin: 0;
     font-size: 1rem;
     font-weight: 600;
-    color: var(--secondary-text-color);
+    color: var(--text-secondary);
 }
 
+/* --- Banners --- */
 .intervention-banner {
     margin-top: 1rem;
     padding: 0.75rem 1rem;
     border-radius: 10px;
-    border: 1px solid rgba(148, 163, 184, 0.35);
-    background: rgba(148, 163, 184, 0.12);
+    border: 1px solid var(--border-color);
+    background: var(--bg-subtle);
     font-size: 0.95rem;
     line-height: 1.45;
 }
 
 .intervention-banner.none {
-    border-color: rgba(148, 163, 184, 0.35);
-    background: rgba(148, 163, 184, 0.12);
+    border-color: var(--border-color);
+    background: var(--bg-subtle);
 }
 
 .intervention-banner.charge {
@@ -144,6 +221,152 @@ main {
     margin-top: 0.35rem;
 }
 
+/* --- Forms & Inputs --- */
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.field label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 0.35rem;
+    color: var(--text-color);
+}
+
+.field select,
+.field input[type="number"],
+.field input[type="text"] {
+    width: 100%;
+    padding: 0.55rem 0.75rem;
+    border-radius: 10px;
+    border: 1px solid var(--input-border);
+    background: var(--input-bg);
+    color: inherit;
+    font-size: 0.95rem;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+    box-sizing: border-box;
+}
+
+.field select:focus,
+.field input:focus {
+    outline: none;
+    border-color: var(--border-focus);
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.field input[disabled] {
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
+.field .hint {
+    font-size: 0.85rem;
+    margin-top: 0.35rem;
+    color: var(--text-muted);
+}
+
+.field .hint.error {
+    color: var(--color-error);
+    opacity: 1;
+}
+
+.field .hint .error-text {
+    color: var(--color-error);
+    font-weight: 600;
+}
+
+.field .hint .warning-text {
+    color: #b45309;
+    font-weight: 600;
+}
+
+.checkbox-field {
+    gap: 0.45rem;
+}
+
+.checkbox {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-weight: 600;
+    color: var(--text-color);
+    cursor: pointer;
+}
+
+.checkbox input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--color-primary);
+    cursor: pointer;
+}
+
+/* --- Toggle Switch --- */
+.control-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+}
+
+.switch-label {
+    font-weight: 600;
+    font-size: 1.1rem;
+}
+
+.toggle-switch {
+    all: unset;
+    position: relative;
+    width: 52px;
+    height: 30px;
+    background-color: #d1d5db;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: background-color 0.2s ease-in-out, border-color 0.2s ease;
+    padding: 2px;
+    display: flex;
+    align-items: center;
+    box-sizing: border-box;
+}
+
+.toggle-switch:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--bg-color), 0 0 0 4px var(--color-primary);
+}
+
+.toggle-switch[aria-checked="true"] {
+    background-color: var(--color-primary);
+}
+
+.toggle-switch .knob {
+    display: block;
+    width: 22px;
+    height: 22px;
+    background-color: white;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+    transition: transform 0.2s ease-in-out;
+    transform: translateX(0);
+    flex-shrink: 0;
+}
+
+.toggle-switch[aria-checked="true"] .knob {
+    transform: translateX(22px);
+}
+
+.toggle-switch[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.toggle-switch[disabled] .toggle-switch-slider {
+    background-color: #9ca3af;
+}
+
+/* --- Settings --- */
 .settings-nav {
     display: flex;
     flex-wrap: wrap;
@@ -168,7 +391,7 @@ main {
 }
 
 .settings-nav button.active {
-    border-color: var(--mdc-theme-primary, #2563eb);
+    border-color: var(--color-primary);
     background: rgba(37, 99, 235, 0.18);
     color: var(--text-color);
 }
@@ -196,81 +419,6 @@ main {
     padding: 0 0.4rem;
 }
 
-.settings-form .field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-}
-
-.checkbox-field {
-    gap: 0.45rem;
-}
-
-.checkbox {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.6rem;
-    font-weight: 600;
-    color: var(--text-color);
-    cursor: pointer;
-}
-
-.checkbox input[type="checkbox"] {
-    width: 18px;
-    height: 18px;
-    accent-color: var(--mdc-theme-primary, #2563eb);
-    cursor: pointer;
-}
-
-.field label {
-    display: block;
-    font-weight: 600;
-    margin-bottom: 0.35rem;
-    color: var(--text-color);
-}
-
-.field select {
-    width: 100%;
-    padding: 0.55rem 0.75rem;
-    border-radius: 10px;
-    border: 1px solid rgba(148, 163, 184, 0.35);
-    background: var(--card-bg);
-    color: inherit;
-    font-size: 0.95rem;
-    transition: border-color 120ms ease;
-}
-
-.field select:focus {
-    outline: none;
-    border-color: var(--border-color);
-}
-
-.field input[type="number"],
-.field input[type="text"] {
-    width: 100%;
-    padding: 0.55rem 0.75rem;
-    border-radius: 10px;
-    border: 1px solid rgba(148, 163, 184, 0.35);
-    background: var(--card-bg);
-    color: inherit;
-    font-size: 0.95rem;
-    transition: border-color 120ms ease, box-shadow 120ms ease;
-    box-sizing: border-box;
-}
-
-.field input[type="number"]:focus,
-.field input[type="text"]:focus {
-    outline: none;
-    border-color: var(--border-color);
-    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
-}
-
-.field input[type="number"][disabled],
-.field input[type="text"][disabled] {
-    opacity: 0.65;
-    cursor: not-allowed;
-}
-
 .tariff-group {
     border: 1px solid rgba(148, 163, 184, 0.25);
     border-radius: 12px;
@@ -288,87 +436,121 @@ main {
 .tariff-group legend {
     font-weight: 600;
     padding: 0 0.4rem;
-    color: var(--secondary-text-color);
+    color: var(--text-secondary);
     margin-bottom: 0.35rem;
 }
 
-.field .hint {
-    font-size: 0.85rem;
-    margin-top: 0.35rem;
-    color: var(--muted-text-color);
+/* --- Driver Config --- */
+.driver-config-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-top: 0.5rem;
+    padding: 1rem;
+    background: rgba(127, 127, 127, 0.05);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
 }
 
-.field .hint.error {
-    color: #dc2626;
-    opacity: 1;
+.driver-config-grid .field {
+    margin-bottom: 0;
 }
 
-.field .hint .error-text {
-    color: #dc2626;
-    font-weight: 600;
+.driver-config-grid label {
+    font-size: 0.9rem;
+    margin-bottom: 0.25rem;
+    display: block;
+    color: var(--text-secondary);
 }
 
-.field .hint .warning-text {
-    color: #b45309;
-    font-weight: 600;
-}
-
-.settings-form .message {
-    margin: 0;
-}
-
-.entity-trigger {
+.driver-config-grid input {
     width: 100%;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.65rem 0.9rem;
-    border-radius: 10px;
-    border: 1px solid rgba(148, 163, 184, 0.35);
-    background: var(--card-bg);
-    color: inherit;
-    font-size: 0.95rem;
-    cursor: pointer;
-    transition: border-color 120ms ease, background 120ms ease;
     box-sizing: border-box;
 }
 
-.entity-trigger .entity-trigger-text {
-    line-height: 1.2;
-    flex: 1 1 auto;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+/* --- Driver Entity Table --- */
+.driver-entity-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
 }
 
-.entity-trigger .entity-trigger-hint {
-    line-height: 1;
-    font-size: 0.85rem;
-    opacity: 0.75;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 1.5rem;
-    margin-left: 0.75rem;
-    padding-left: 0.5rem;
-    border-left: 1px solid rgba(148, 163, 184, 0.35);
-    flex-shrink: 0;
-    width: 1.5rem;
+.driver-entity-table th,
+.driver-entity-table td {
+    padding: 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+    color: var(--text-color);
 }
 
-.entity-trigger:hover,
-.entity-trigger:focus {
+.driver-entity-table th {
+    background-color: rgba(148, 163, 184, 0.1);
+    font-weight: 600;
+    color: var(--text-color);
+}
+
+.driver-entity-table tr:hover {
+    background-color: rgba(148, 163, 184, 0.05);
+}
+
+.driver-entity-input,
+.driver-entity-button {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    font-family: 'Courier New', monospace;
+    font-size: 0.875rem;
+    transition: border-color 0.2s, background-color 0.2s;
+    background: var(--card-bg);
+    color: inherit;
+    box-sizing: border-box;
+}
+
+.driver-entity-button {
+    text-align: left;
+    cursor: pointer;
+}
+
+.driver-entity-input:focus,
+.driver-entity-button:focus {
     outline: none;
-    border-color: var(--border-color);
-    background: rgba(148, 163, 184, 0.08);
+    border-color: var(--color-primary);
 }
 
-.entity-trigger[disabled] {
-    cursor: not-allowed;
-    opacity: 0.65;
+.driver-entity-button:hover {
+    background-color: rgba(148, 163, 184, 0.1);
 }
 
+.driver-entity-input.valid-default,
+.driver-entity-button.valid-default {
+    border-color: var(--color-primary);
+    background-color: rgba(59, 130, 246, 0.1);
+}
+
+.driver-entity-input.valid-custom,
+.driver-entity-button.valid-custom {
+    border-color: var(--color-success);
+    background-color: rgba(16, 185, 129, 0.1);
+}
+
+.driver-entity-input.invalid,
+.driver-entity-button.invalid {
+    border-color: var(--color-error);
+    background-color: rgba(239, 68, 68, 0.1);
+}
+
+.driver-entity-button.invalid {
+    color: var(--color-error);
+}
+
+.driver-entity-domain {
+    color: var(--text-muted);
+    font-family: 'Courier New', monospace;
+    font-size: 0.875rem;
+}
+
+/* --- Modals --- */
 body.modal-open {
     overflow: hidden;
 }
@@ -446,15 +628,16 @@ body.modal-open {
     width: 100%;
     padding: 0.65rem 0.75rem;
     border-radius: 10px;
-    border: 1px solid rgba(148, 163, 184, 0.35);
+    border: 1px solid var(--border-color);
     background: var(--card-bg);
     color: inherit;
     font-size: 0.95rem;
+    box-sizing: border-box;
 }
 
 #entitySearch:focus {
     outline: none;
-    border-color: var(--border-color);
+    border-color: var(--border-focus);
 }
 
 .entity-list {
@@ -471,6 +654,7 @@ body.modal-open {
     padding: 0.75rem 1rem;
     cursor: pointer;
     border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+    box-sizing: border-box;
 }
 
 .entity-option:hover,
@@ -486,11 +670,12 @@ body.modal-open {
     font-size: 0.85rem;
     opacity: 0.75;
     margin-top: 0.25rem;
+    display: block;
 }
 
 .entity-option.selected {
     background: rgba(37, 99, 235, 0.15);
-    border-left: 3px solid var(--mdc-theme-primary, #2563eb);
+    border-left: 3px solid var(--color-primary);
 }
 
 .entity-list .entity-option:last-child {
@@ -523,118 +708,70 @@ body.modal-open {
     background: rgba(148, 163, 184, 0.28);
 }
 
-.card h2 {
-    margin: 0 0 0.5rem;
-    font-size: clamp(1.25rem, 1.8vw, 1.5rem);
-}
-
-.control-row {
+/* --- Entity Trigger (Old?) --- */
+.entity-trigger {
+    width: 100%;
     display: flex;
-    align-items: center;
     justify-content: space-between;
-    gap: 1rem;
-    margin-bottom: 0.75rem;
-}
-
-.switch-label {
-    font-weight: 600;
-    font-size: 1.1rem;
-}
-
-.toggle-switch {
-    all: unset;
-    /* Reset generic button styles */
-    position: relative;
-    width: 52px;
-    height: 30px;
-    background-color: #d1d5db;
-    /* Darker gray for better contrast */
-    border-radius: 999px;
-    border: 2px solid transparent;
-    cursor: pointer;
-    transition: background-color 0.2s ease-in-out, border-color 0.2s ease;
-    padding: 2px;
-    display: flex;
     align-items: center;
-    box-sizing: border-box;
-    /* Ensure padding doesn't affect width */
-}
-
-.toggle-switch:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--bg-color), 0 0 0 4px var(--mdc-theme-primary, #2563eb);
-}
-
-.toggle-switch[aria-checked="true"] {
-    background-color: var(--mdc-theme-primary, #2563eb);
-}
-
-.toggle-switch .knob {
-    display: block;
-    width: 22px;
-    /* Slightly smaller to fit with padding */
-    height: 22px;
-    background-color: white;
-    border-radius: 50%;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-    transition: transform 0.2s ease-in-out;
-    transform: translateX(0);
-    flex-shrink: 0;
-    /* Prevent shrinking */
-}
-
-.toggle-switch[aria-checked="true"] .knob {
-    transform: translateX(22px);
-}
-
-.toggle-switch[disabled] {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-
-.actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-    margin-top: 1rem;
-}
-
-button {
-    all: unset;
-    cursor: pointer;
-    border-radius: 8px;
-    padding: 0.5rem 1.05rem;
-    font-weight: 600;
-    border: 1px solid rgba(148, 163, 184, 0.35);
-    background: rgba(148, 163, 184, 0.12);
+    gap: 0.5rem;
+    padding: 0.65rem 0.9rem;
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+    background: var(--card-bg);
     color: inherit;
-    transition: background 120ms ease, border-color 120ms ease;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease;
+    box-sizing: border-box;
 }
 
-button:hover,
-button:focus {
+.entity-trigger .entity-trigger-text {
+    line-height: 1.2;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.entity-trigger .entity-trigger-hint {
+    line-height: 1;
+    font-size: 0.85rem;
+    opacity: 0.75;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.5rem;
+    margin-left: 0.75rem;
+    padding-left: 0.5rem;
+    border-left: 1px solid var(--border-color);
+    flex-shrink: 0;
+    width: 1.5rem;
+}
+
+.entity-trigger:hover,
+.entity-trigger:focus {
     outline: none;
-    border-color: var(--border-color);
-    background: rgba(148, 163, 184, 0.22);
+    border-color: var(--border-focus);
+    background: rgba(148, 163, 184, 0.08);
 }
 
-button.secondary {
-    background: rgba(15, 23, 42, 0.04);
+.entity-trigger[disabled] {
+    cursor: not-allowed;
+    opacity: 0.65;
 }
 
-button.primary {
-    background: rgba(37, 99, 235, 0.12);
-    border-color: rgba(37, 99, 235, 0.45);
-}
-
+/* ==========================================================================
+   Utilities & Misc
+   ========================================================================== */
 .message {
     margin: 1rem 0 0;
     font-size: 0.95rem;
-    color: var(--secondary-text-color);
+    color: var(--text-secondary);
 }
 
 .message.error {
-    color: #dc2626;
+    color: var(--color-error);
 }
 
 .training-state {
@@ -642,15 +779,24 @@ button.primary {
 }
 
 .training-state.running {
-    color: #2563eb;
+    color: var(--color-primary);
 }
 
 .training-state.error {
-    color: #dc2626;
+    color: var(--color-error);
+    display: none;
+}
+
+.training-state.error.active {
+    display: block;
+}
+
+.training-state.message {
+    margin: 0;
 }
 
 .meta {
-    color: var(--muted-text-color);
+    color: var(--text-muted);
     font-size: 0.9rem;
 }
 
@@ -669,7 +815,7 @@ button.primary {
 
 .summary-label {
     font-size: 0.85rem;
-    color: var(--muted-text-color);
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.08em;
 }
@@ -677,10 +823,6 @@ button.primary {
 .summary-value {
     font-size: 1.3rem;
     font-weight: 700;
-}
-
-.entity-modal .entity-meta {
-    display: block;
 }
 
 .training-cta {
@@ -691,7 +833,7 @@ button.primary {
 
 .training-cta .help {
     font-size: 0.85rem;
-    color: var(--muted-text-color);
+    color: var(--text-muted);
 }
 
 .training-cta button {
@@ -718,18 +860,9 @@ button.primary {
     fill: currentColor;
 }
 
-.training-state.error {
-    display: none;
-}
-
-.training-state.error.active {
-    display: block;
-}
-
-.training-state.message {
-    margin: 0;
-}
-
+/* ==========================================================================
+   Responsive
+   ========================================================================== */
 @media (max-width: 720px) {
     body {
         padding: 1rem;
@@ -755,114 +888,4 @@ button.primary {
         width: 100%;
         text-align: center;
     }
-}
-/* Driver Entity Mapping Table */
-.driver-entity-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 1rem 0;
-}
-
-.driver-entity-table th,
-.driver-entity-table td {
-    padding: 0.75rem;
-    text-align: left;
-    border-bottom: 1px solid #e5e7eb;
-}
-
-.driver-entity-table th {
-    background-color: #f9fafb;
-    font-weight: 600;
-    color: #374151;
-}
-
-.driver-entity-table tr:hover {
-    background-color: #f3f4f6;
-}
-
-.driver-entity-input {
-    width: 100%;
-    padding: 0.5rem;
-    border: 2px solid #d1d5db;
-    border-radius: 0.375rem;
-    font-family: 'Courier New', monospace;
-    font-size: 0.875rem;
-    transition: border-color 0.2s, background-color 0.2s;
-}
-
-.driver-entity-input:focus {
-    outline: none;
-    border-color: #3b82f6;
-}
-
-/* Validation colors */
-.driver-entity-input.valid-default {
-    border-color: #3b82f6;
-    background-color: #eff6ff;
-}
-
-.driver-entity-input.valid-custom {
-    border-color: #10b981;
-    background-color: #f0fdf4;
-}
-
-.driver-entity-input.invalid {
-    border-color: #ef4444;
-    background-color: #fef2f2;
-}
-
-.driver-entity-domain {
-    color: #6b7280;
-    font-family: 'Courier New', monospace;
-    font-size: 0.875rem;
-}
-
-/* Driver Entity Button */
-.driver-entity-button {
-    width: 100%;
-    padding: 0.5rem;
-    border: 2px solid #d1d5db;
-    border-radius: 0.375rem;
-    background: white;
-    font-family: 'Courier New', monospace;
-    font-size: 0.875rem;
-    text-align: left;
-    cursor: pointer;
-    transition: border-color 0.2s, background-color 0.2s;
-}
-
-.driver-entity-button:hover {
-    background-color: #f9fafb;
-}
-
-.driver-entity-button:focus {
-    outline: none;
-    border-color: #3b82f6;
-}
-
-/* Validation colors for button */
-.driver-entity-button.valid-default {
-    border-color: #3b82f6;
-    background-color: #eff6ff;
-}
-
-.driver-entity-button.valid-custom {
-    border-color: #10b981;
-    background-color: #f0fdf4;
-}
-
-.driver-entity-button.invalid {
-    border-color: #ef4444;
-    background-color: #fef2f2;
-    color: #991b1b;
-}
-
-/* Disabled control switch */
-.toggle-switch[disabled] {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-.toggle-switch[disabled] .toggle-switch-slider {
-    background-color: #9ca3af;
 }

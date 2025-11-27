@@ -31,6 +31,8 @@ def solve_lp_optimal_control(
     force_terminal_soc: bool = True,
     terminal_soc: Optional[float] = None,
     allow_grid_charging: bool = True,
+    export_enabled: bool = True,
+    export_limit_kw: Optional[float] = None,
 ) -> pd.DataFrame:
     """Solve linear program for optimal battery dispatch.
 
@@ -152,7 +154,8 @@ def solve_lp_optimal_control(
         terminal_energy = cap_kwh * terminal_target
 
     if terminal_energy is not None:
-        cons.append(e[-1] == terminal_energy)
+        # Relax equality to inequality to allow charging from surplus
+        cons.append(e[-1] >= terminal_energy)
 
     reserve_shortfall = None
     if soft_soc_target is not None and cap_kwh > 0:
@@ -167,9 +170,15 @@ def solve_lp_optimal_control(
         ]
         if not allow_grid_charging:
             cons += [grid_to_batt[t] == 0]
+        
+        if not export_enabled:
+            cons += [grid_export[t] == 0]
+        elif export_limit_kw is not None and export_limit_kw >= 0:
+            cons += [grid_export[t] <= export_limit_kw]
+
         e_next = e[t] + (eta_c * eta_b_c) * ch_ac[t] * dt[t] - (1.0 / (eta_d * eta_b_d)) * dis_ac[t] * dt[t]
         cons += [e[t + 1] == e_next]
-        if reserve_shortfall is not None:
+        if reserve_shortfall is not None and soft_soc_target is not None:
             cons += [reserve_shortfall[t] >= cap_kwh * soft_soc_target - e[t + 1]]
 
     BUY = cp.Constant(prices_import)
@@ -188,17 +197,25 @@ def solve_lp_optimal_control(
     deg_cost = deg_eur_per_kwh * cp.sum(throughput_kwh)
 
     reserve_penalty = 0.0
+    avg_buy_price = float(np.mean(prices_import)) if len(prices_import) else 0.0
+
     if reserve_shortfall is not None:
         # Default to average import price unless an explicit penalty is provided
         penalty_weight = reserve_soft_penalty_eur_per_kwh
         if penalty_weight is None:
-            avg_buy_price = float(np.mean(prices_import)) if len(prices_import) else 0.0
             penalty_weight = max(avg_buy_price, 0.0)
         else:
             penalty_weight = max(penalty_weight, 0.0)
         reserve_penalty = penalty_weight * cp.sum(reserve_shortfall)
 
-    obj = cp.Minimize(trade_cost + deg_cost + reserve_penalty)
+    # Value the stored energy at the end of horizon to incentivize charging from surplus
+    # We must account for discharge efficiency (battery -> load), otherwise the optimizer 
+    # might buy grid power thinking it can store it at 100% efficiency.
+    # Value = Energy * Discharge_Efficiency * Avg_Price
+    total_discharge_eff = eta_d * eta_b_d
+    terminal_value = e[-1] * total_discharge_eff * avg_buy_price
+
+    obj = cp.Minimize(trade_cost + deg_cost + reserve_penalty - terminal_value)
 
     prob = cp.Problem(obj, cons)
     used = None
@@ -211,6 +228,9 @@ def solve_lp_optimal_control(
 
     if prob.status not in ("optimal", "optimal_inaccurate"):
         raise RuntimeError(f"Optimization failed: {prob.status}")
+
+    if e.value is None:
+        raise RuntimeError("Optimization solved but variable values are missing")
 
     opt = pd.DataFrame(index=S.index, data={
         "pv_kw": pv, "load_kw": load, "dt_h": dt,
@@ -228,7 +248,10 @@ def solve_lp_optimal_control(
         "sell_price_eur_per_kwh": prices_export,
         "spot_price_eur_per_kwh": prices_base,
     })
-    opt.loc[:, "soc"] = (np.array(e.value[1:]) / cap_kwh).clip(0, 1)
+    if cap_kwh > 0:
+        opt.loc[:, "soc"] = (np.array(e.value[1:]) / cap_kwh).clip(0, 1)
+    else:
+        opt.loc[:, "soc"] = 0.0
     opt.loc[:, "import_kwh"] = opt["grid_import_kw"] * opt["dt_h"]
     opt.loc[:, "export_kwh"] = opt["grid_export_kw"] * opt["dt_h"]
     opt.loc[:, "cost_import_eur"] = opt["import_kwh"] * opt["buy_price_eur_per_kwh"]

@@ -1,5 +1,5 @@
 {
-  "inverter": {
+  "ha_entities": {
     "house_consumption": {
       "entity_id": "sensor.house_consumption",
       "unit": "W"
@@ -8,13 +8,23 @@
       "entity_id": "sensor.pv_power",
       "unit": "W"
     },
-    "export_power_limited": false
-  },
-  "battery": {
+    "export_power_limited": false,
+    "driver_id": "goodwe",
+    "driver_config": {
+      "max_power_kw": 9.6
+    },
+    "entity_map": {
+      "operation_mode": "select.goodwe_inverter_operation_mode",
+      "eco_mode_power": "number.goodwe_eco_mode_power",
+      "eco_mode_soc": "number.goodwe_eco_mode_soc",
+      "active_power": "sensor.active_power"
+    },
     "soc_sensor": {
       "entity_id": "sensor.battery_state_of_charge",
       "unit": "%"
-    },
+    }
+  },
+  "battery": {
     "wear_cost_eur_per_kwh": 0.07,
     "capacity_kwh": 7.68,
     "power_limit_kw": 8.0,
@@ -39,6 +49,9 @@
       "dual_offpeak_eur_per_kwh": 0.0,
       "dual_peak_start_local": "07:00",
       "dual_peak_end_local": "21:00"
-    }
-  }
+    },
+    "export_enabled": true,
+    "export_limit_kw": null
+  },
+  "auto_training_enabled": false
 }

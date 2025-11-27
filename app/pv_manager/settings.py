@@ -84,11 +84,15 @@ class TariffSettings:
 class PricingSettings:
     import_tariff: TariffSettings = field(default_factory=_default_import_tariff)
     export_tariff: TariffSettings = field(default_factory=_default_export_tariff)
+    export_enabled: bool = True
+    export_limit_kw: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "import": self.import_tariff.to_dict(),
             "export": self.export_tariff.to_dict(),
+            "export_enabled": self.export_enabled,
+            "export_limit_kw": self.export_limit_kw,
         }
 
 
@@ -102,10 +106,14 @@ class EntitySelection:
 
 
 @dataclass
-class InverterSettings:
+class HAEntitiesSettings:
     house_consumption: EntitySelection
     pv_power: EntitySelection
+    soc_sensor: Optional[EntitySelection] = None
     export_power_limited: bool = False
+    driver_id: Optional[str] = None
+    driver_config: Dict[str, Any] = field(default_factory=dict)
+    entity_map: Dict[str, str] = field(default_factory=dict)
 
     def rename_map(self) -> Dict[str, str]:
         m = {}
@@ -132,7 +140,6 @@ class InverterSettings:
 
 @dataclass
 class BatterySettings:
-    soc_sensor: Optional[EntitySelection] = None
     wear_cost_eur_per_kwh: float = 0.10
     capacity_kwh: float = 10.0
     power_limit_kw: float = 3.0
@@ -142,41 +149,50 @@ class BatterySettings:
 
 @dataclass
 class AppSettings:
-    inverter: InverterSettings
+    ha_entities: HAEntitiesSettings
     battery: BatterySettings = field(default_factory=BatterySettings)
     pricing: PricingSettings = field(default_factory=PricingSettings)
+    auto_training_enabled: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "inverter": {
-                "house_consumption": asdict(self.inverter.house_consumption),
-                "pv_power": asdict(self.inverter.pv_power),
-                "export_power_limited": self.inverter.export_power_limited,
-            }
+        ha_payload = {
+            "house_consumption": asdict(self.ha_entities.house_consumption),
+            "pv_power": asdict(self.ha_entities.pv_power),
+            "export_power_limited": self.ha_entities.export_power_limited,
+            "driver_id": self.ha_entities.driver_id,
+            "driver_config": self.ha_entities.driver_config,
+            "entity_map": self.ha_entities.entity_map,
         }
-        if self.battery.soc_sensor:
-            payload["battery"] = {
-                "soc_sensor": asdict(self.battery.soc_sensor),
-            }
+        if self.ha_entities.soc_sensor:
+            ha_payload["soc_sensor"] = asdict(self.ha_entities.soc_sensor)
         else:
-            payload["battery"] = {"soc_sensor": None}
-        payload["battery"]["wear_cost_eur_per_kwh"] = float(self.battery.wear_cost_eur_per_kwh)
-        payload["battery"]["capacity_kwh"] = float(self.battery.capacity_kwh)
-        payload["battery"]["power_limit_kw"] = float(self.battery.power_limit_kw)
-        payload["battery"]["soc_min"] = float(self.battery.soc_min)
-        payload["battery"]["soc_max"] = float(self.battery.soc_max)
-        payload["pricing"] = self.pricing.to_dict()
+            ha_payload["soc_sensor"] = None
+
+        payload: Dict[str, Any] = {
+            "ha_entities": ha_payload,
+            "battery": {
+                "wear_cost_eur_per_kwh": float(self.battery.wear_cost_eur_per_kwh),
+                "capacity_kwh": float(self.battery.capacity_kwh),
+                "power_limit_kw": float(self.battery.power_limit_kw),
+                "soc_min": float(self.battery.soc_min),
+                "soc_max": float(self.battery.soc_max),
+            },
+            "pricing": self.pricing.to_dict(),
+            "auto_training_enabled": self.auto_training_enabled,
+        }
         return payload
 
 
 _DEFAULT_SETTINGS = AppSettings(
-    inverter=InverterSettings(
+    ha_entities=HAEntitiesSettings(
         house_consumption=EntitySelection("sensor.house_consumption", "W"),
         pv_power=EntitySelection("sensor.pv_power", "W"),
+        soc_sensor=None,
         export_power_limited=False,
     ),
-    battery=BatterySettings(soc_sensor=None),
+    battery=BatterySettings(),
     pricing=PricingSettings(),
+    auto_training_enabled=False,
 )
 
 
@@ -201,26 +217,78 @@ def load_settings() -> AppSettings:
     except json.JSONDecodeError:
         return _DEFAULT_SETTINGS
 
-    inverter = data.get("inverter", {})
-    house = inverter.get("house_consumption", {})
-    pv = inverter.get("pv_power", {})
-    export_limit = inverter.get("export_power_limited", _DEFAULT_SETTINGS.inverter.export_power_limited)
+    # Migration logic:
+    # If "ha_entities" exists, use it.
+    # Else, try to build it from "inverter" and "battery" (old structure).
+    
+    ha_data = data.get("ha_entities", {})
+    inverter_data = data.get("inverter", {})
+    battery_data = data.get("battery", {})
+    
+    # House Consumption
+    if "house_consumption" in ha_data:
+        house_block = ha_data["house_consumption"]
+    else:
+        house_block = inverter_data.get("house_consumption", {})
+        
+    house_sel = EntitySelection(
+        entity_id=house_block.get("entity_id", _DEFAULT_SETTINGS.ha_entities.house_consumption.entity_id),
+        unit=house_block.get("unit"),
+    )
+
+    # PV Power
+    if "pv_power" in ha_data:
+        pv_block = ha_data["pv_power"]
+    else:
+        pv_block = inverter_data.get("pv_power", {})
+        
+    pv_sel = EntitySelection(
+        entity_id=pv_block.get("entity_id", _DEFAULT_SETTINGS.ha_entities.pv_power.entity_id),
+        unit=pv_block.get("unit"),
+    )
+
+    # SoC Sensor
+    if "soc_sensor" in ha_data:
+        soc_block = ha_data["soc_sensor"]
+    else:
+        soc_block = battery_data.get("soc_sensor")
+        
+    soc_id = soc_block.get("entity_id") if isinstance(soc_block, dict) else None
+    if soc_id:
+        soc_sel = EntitySelection(
+            entity_id=str(soc_id),
+            unit=soc_block.get("unit") if isinstance(soc_block, dict) else None,
+        )
+    else:
+        soc_sel = None
+
+    # Export Limit
+    if "export_power_limited" in ha_data:
+        export_limit = ha_data["export_power_limited"]
+    else:
+        export_limit = inverter_data.get("export_power_limited", _DEFAULT_SETTINGS.ha_entities.export_power_limited)
+        
     if isinstance(export_limit, str):
         export_limit = export_limit.strip().lower() in {"1", "true", "yes", "on"}
     elif not isinstance(export_limit, bool):
         export_limit = bool(export_limit)
 
-    battery_data = data.get("battery", {})
-    soc_block = battery_data.get("soc_sensor") or {}
-    soc_entity = soc_block.get("entity_id") if isinstance(soc_block, dict) else None
-    if soc_entity:
-        soc_selection: Optional[EntitySelection] = EntitySelection(
-            entity_id=soc_entity,
-            unit=soc_block.get("unit") if isinstance(soc_block, dict) else None,
-        )
-    else:
-        soc_selection = None
+    # Driver Config
+    driver_id = ha_data.get("driver_id")
+    driver_config = ha_data.get("driver_config", {})
+    entity_map = ha_data.get("entity_map", {})
 
+    ha_entities = HAEntitiesSettings(
+        house_consumption=house_sel,
+        pv_power=pv_sel,
+        soc_sensor=soc_sel,
+        export_power_limited=export_limit,
+        driver_id=driver_id,
+        driver_config=driver_config,
+        entity_map=entity_map,
+    )
+
+    # Battery Settings (minus soc_sensor)
     wear_cost_raw = battery_data.get("wear_cost_eur_per_kwh", _DEFAULT_SETTINGS.battery.wear_cost_eur_per_kwh)
     try:
         wear_cost_val = float(wear_cost_raw)
@@ -255,20 +323,11 @@ def load_settings() -> AppSettings:
     pricing_block = data.get("pricing")
     pricing_settings = coerce_pricing_payload(pricing_block, _DEFAULT_SETTINGS.pricing)
 
+    auto_training = bool(data.get("auto_training_enabled", False))
+
     return AppSettings(
-        inverter=InverterSettings(
-            house_consumption=EntitySelection(
-                entity_id=house.get("entity_id", _DEFAULT_SETTINGS.inverter.house_consumption.entity_id),
-                unit=house.get("unit"),
-            ),
-            pv_power=EntitySelection(
-                entity_id=pv.get("entity_id", _DEFAULT_SETTINGS.inverter.pv_power.entity_id),
-                unit=pv.get("unit"),
-            ),
-            export_power_limited=export_limit,
-        ),
+        ha_entities=ha_entities,
         battery=BatterySettings(
-            soc_sensor=soc_selection,
             wear_cost_eur_per_kwh=wear_cost_val,
             capacity_kwh=capacity_val,
             power_limit_kw=power_limit_val,
@@ -276,6 +335,7 @@ def load_settings() -> AppSettings:
             soc_max=float(soc_max_val),
         ),
         pricing=pricing_settings,
+        auto_training_enabled=auto_training,
     )
 
 
@@ -317,9 +377,22 @@ def coerce_tariff_payload(payload: Any, base: Optional[TariffSettings], scope: s
 
 def coerce_pricing_payload(payload: Any, base: Optional[PricingSettings]) -> PricingSettings:
     base_settings = base if base is not None else PricingSettings()
-    import_block = payload.get("import") if isinstance(payload, dict) else None
-    export_block = payload.get("export") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return base_settings
+    import_block = payload.get("import")
+    export_block = payload.get("export")
+
+    export_enabled = payload.get("export_enabled")
+    if not isinstance(export_enabled, bool):
+        export_enabled = base_settings.export_enabled
+
+    export_limit_kw = _sanitize_float(payload.get("export_limit_kw"))
+    if export_limit_kw is None and "export_limit_kw" not in payload:
+        export_limit_kw = base_settings.export_limit_kw
+
     return PricingSettings(
         import_tariff=coerce_tariff_payload(import_block, base_settings.import_tariff, "import"),
         export_tariff=coerce_tariff_payload(export_block, base_settings.export_tariff, "export"),
+        export_enabled=export_enabled,
+        export_limit_kw=export_limit_kw,
     )

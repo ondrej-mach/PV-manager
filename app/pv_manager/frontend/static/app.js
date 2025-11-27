@@ -15,8 +15,8 @@ let gridChart;
 let priceImputedFlags = [];
 let showingSettings = false;
 let statisticsCatalog = [];
-let inverterSettings = null;
-let inverterBusy = false;
+let haEntitiesSettings = null;
+let haEntitiesBusy = false;
 let entityCatalog = [];
 let powerEntityCatalog = [];
 let batteryEntityCatalog = [];
@@ -38,7 +38,7 @@ const batteryLabel = document.getElementById('batterySocLabel');
 const houseHint = document.getElementById('houseHint');
 const pvHint = document.getElementById('pvHint');
 const batteryHint = document.getElementById('batterySocHint');
-const inverterMessage = document.getElementById('inverterMessage');
+const haEntitiesMessage = document.getElementById('controlMessage');
 const batteryMessage = document.getElementById('batteryMessage');
 const batteryWearInput = document.getElementById('batteryWearInput');
 const batteryWearHint = document.getElementById('batteryWearHint');
@@ -296,7 +296,9 @@ function toggleSettings() {
     }
     updateViewMode();
     if (showingSettings) {
+        activateSettingsTab('control');
         loadSettingsData();
+        loadControlSettings();
     } else {
         refreshAll();
     }
@@ -423,8 +425,8 @@ function setMessage(element, text, kind = 'info', autoHideMs = 0, timerKey) {
     }
 }
 
-function setInverterMessage(text, kind = 'info') {
-    setMessage(inverterMessage, text, kind);
+function setHAEntitiesMessage(text, kind = 'info') {
+    setMessage(haEntitiesMessage, text, kind);
 }
 
 function setBatteryMessage(text, kind = 'info', autoHideMs = 0) {
@@ -436,16 +438,16 @@ function bindClick(element, handler) {
     element.addEventListener('click', handler);
 }
 
-function renderInverterHints() {
-    if (!inverterSettings) return;
+function renderHAEntitiesHints() {
+    if (!haEntitiesSettings) return;
     const catalogMap = Object.create(null);
     statisticsCatalog.forEach((item) => {
         if (item && item.statistic_id) {
             catalogMap[item.statistic_id] = item;
         }
     });
-    const house = inverterSettings.house_consumption || {};
-    const pv = inverterSettings.pv_power || {};
+    const house = haEntitiesSettings.house_consumption || {};
+    const pv = haEntitiesSettings.pv_power || {};
     const applyHint = (el, selection) => {
         if (!el || !selection) return;
         const meta = catalogMap[selection.entity_id];
@@ -509,6 +511,8 @@ function defaultPricingSettings() {
     return {
         import: defaultTariffConfig('import'),
         export: defaultTariffConfig('export'),
+        export_enabled: true,
+        export_limit_kw: null,
     };
 }
 
@@ -628,6 +632,13 @@ function normalizePricingSettings(raw) {
     if (raw.export) {
         settings.export = normalizeTariffConfig(raw.export, 'export');
     }
+    if (typeof raw.export_enabled === 'boolean') {
+        settings.export_enabled = raw.export_enabled;
+    }
+    if (raw.export_limit_kw !== undefined && raw.export_limit_kw !== null) {
+        const val = Number(raw.export_limit_kw);
+        settings.export_limit_kw = Number.isFinite(val) && val >= 0 ? val : null;
+    }
     return settings;
 }
 
@@ -646,8 +657,8 @@ function applySettingsPayload(payload) {
         refreshEntityCatalogs(payload.entities);
     }
     if (payload.settings) {
-        if (payload.settings.inverter) {
-            inverterSettings = payload.settings.inverter;
+        if (payload.settings.ha_entities) {
+            haEntitiesSettings = payload.settings.ha_entities;
         }
         if (payload.settings.battery) {
             batterySettings = normalizeBatterySettings(payload.settings.battery);
@@ -658,9 +669,20 @@ function applySettingsPayload(payload) {
             pricingSettings = normalizePricingSettings(payload.settings.pricing);
         }
     }
-    renderInverterForm();
+    renderHAEntitiesForm();
     renderBatteryForm();
     renderPricingForm();
+    updateChartVisibility();
+}
+
+function updateChartVisibility() {
+    if (!planChart || !pricingSettings) return;
+    const exportEnabled = pricingSettings.export_enabled !== false;
+    const ds = planChart.data.datasets.find(d => d.id === 'exportPrice');
+    if (ds) {
+        ds.hidden = !exportEnabled;
+        planChart.update();
+    }
 }
 
 function filterPowerEntities(list) {
@@ -724,72 +746,35 @@ function updateEntityButton(button, labelEl, selection, fallback, busy, hasChoic
     button.dataset.entityId = selection && selection.entity_id ? selection.entity_id : '';
 }
 
-function renderInverterForm() {
-    if (!inverterSettings) return;
-    updateEntityButton(
-        houseTrigger,
-        houseLabel,
-        inverterSettings.house_consumption,
-        'None selected',
-        inverterBusy,
-        powerEntityCatalog.length > 0,
-    );
-    updateEntityButton(
-        pvTrigger,
-        pvLabel,
-        inverterSettings.pv_power,
-        'None selected',
-        inverterBusy,
-        powerEntityCatalog.length > 0,
-    );
+function renderHAEntitiesForm() {
+    if (!haEntitiesSettings) return;
+    
+    renderHAEntitiesTable();
+
     if (exportLimitToggle) {
-        exportLimitToggle.checked = Boolean(inverterSettings.export_power_limited);
-        if (inverterBusy) {
+        exportLimitToggle.checked = Boolean(haEntitiesSettings.export_power_limited);
+        if (haEntitiesBusy) {
             exportLimitToggle.setAttribute('disabled', 'disabled');
         } else {
             exportLimitToggle.removeAttribute('disabled');
         }
     }
-    renderInverterHints();
+
     const recorderStatuses = [
-        inverterSettings.house_consumption && inverterSettings.house_consumption.recorder_status,
-        inverterSettings.pv_power && inverterSettings.pv_power.recorder_status,
+        haEntitiesSettings.house_consumption && haEntitiesSettings.house_consumption.recorder_status,
+        haEntitiesSettings.pv_power && haEntitiesSettings.pv_power.recorder_status,
     ];
     if (recorderStatuses.every((value) => value === 'missing')) {
-        setInverterMessage('No Home Assistant statistics were returned for the selected sensors. Verify long-term statistics are enabled.', 'error');
+        setHAEntitiesMessage('No Home Assistant statistics were returned for the selected sensors. Verify long-term statistics are enabled.', 'error');
     } else if (!powerEntityCatalog.length) {
-        setInverterMessage('No power sensors detected. Expose Home Assistant sensors with power readings to proceed.', 'error');
+        setHAEntitiesMessage('No power sensors detected. Expose Home Assistant sensors with power readings to proceed.', 'error');
+    } else if (!batteryEntityCatalog.length) {
+        setHAEntitiesMessage('No battery sensors detected. Expose a sensor with % unit to proceed.', 'error');
     }
 }
 
 function renderBatteryForm() {
-    if (!batteryTrigger) return;
     ensureBatterySettings();
-    const selection = batterySettings.soc_sensor || null;
-    updateEntityButton(
-        batteryTrigger,
-        batteryLabel,
-        selection,
-        'None selected',
-        batteryBusy,
-        batteryEntityCatalog.length > 0,
-        true,
-    );
-    if (batteryHint) {
-        if (!batteryEntityCatalog.length) {
-            batteryHint.textContent = 'No Home Assistant sensors with battery state of charge were detected. Expose a sensor reporting % and retry.';
-            batteryHint.classList.add('error');
-            setBatteryMessage('No eligible battery sensors detected. Once a sensor publishes SoC in %, it will appear here.', 'error');
-        } else if (selection && selection.entity_id) {
-            batteryHint.textContent = 'Optimization will start from the latest value of this sensor.';
-            batteryHint.classList.remove('error');
-            setBatteryMessage('');
-        } else {
-            batteryHint.textContent = 'Choose a sensor reporting battery charge in percent (0-100) or fraction (0-1).';
-            batteryHint.classList.remove('error');
-            setBatteryMessage('');
-        }
-    }
     Object.keys(batteryFieldConfigs).forEach((fieldKey) => {
         renderBatteryFieldInput(fieldKey);
     });
@@ -912,6 +897,22 @@ function updateTariffHint(scope) {
 
 function renderPricingForm() {
     if (!pricingForm) return;
+    ensurePricingSettings();
+
+    const exportEnabledToggle = document.getElementById('exportEnabledToggle');
+    const exportSettingsContainer = document.getElementById('exportSettingsContainer');
+    if (exportEnabledToggle) {
+        exportEnabledToggle.checked = Boolean(pricingSettings.export_enabled);
+    }
+    if (exportSettingsContainer) {
+        exportSettingsContainer.style.display = pricingSettings.export_enabled ? 'block' : 'none';
+    }
+
+    const exportPowerLimitInput = document.getElementById('exportPowerLimit');
+    if (exportPowerLimitInput) {
+        setNumericInputValue(exportPowerLimitInput, pricingSettings.export_limit_kw);
+    }
+
     ['import', 'export'].forEach((scope) => {
         const config = resolveTariffConfig(scope);
         const defaults = defaultTariffConfig(scope);
@@ -1043,24 +1044,54 @@ async function loadSettingsData() {
         const payload = await fetchJson('/api/settings');
         applySettingsPayload(payload);
         const recorderStatuses = [
-            inverterSettings && inverterSettings.house_consumption && inverterSettings.house_consumption.recorder_status,
-            inverterSettings && inverterSettings.pv_power && inverterSettings.pv_power.recorder_status,
+            haEntitiesSettings && haEntitiesSettings.house_consumption && haEntitiesSettings.house_consumption.recorder_status,
+            haEntitiesSettings && haEntitiesSettings.pv_power && haEntitiesSettings.pv_power.recorder_status,
         ];
         if (recorderStatuses.some((value) => value !== 'missing') && powerEntityCatalog.length) {
-            setInverterMessage('');
+            setHAEntitiesMessage('');
         }
         if (batteryEntityCatalog.length) {
             setBatteryMessage('');
         }
+        
+        const autoTrainingToggle = document.getElementById('autoTrainingToggle');
+        if (autoTrainingToggle) {
+            autoTrainingToggle.checked = Boolean(payload.auto_training_enabled);
+        }
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        setInverterMessage(message, 'error');
+        setHAEntitiesMessage(message, 'error');
         setBatteryMessage(message, 'error');
     }
 }
 
+async function updateAutoTrainingSetting(enabled) {
+    const toggle = document.getElementById('autoTrainingToggle');
+    if (toggle) toggle.disabled = true;
+    
+    // Use controlMessage (haEntitiesMessage) for feedback
+    setHAEntitiesMessage('Saving auto-training preference…');
+
+    try {
+        const payload = await fetchJson('/api/settings', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ auto_training_enabled: Boolean(enabled) }),
+        });
+        applySettingsPayload(payload);
+        setHAEntitiesMessage('Saved auto-training preference.', 'success');
+    } catch (err) {
+        setHAEntitiesMessage(err instanceof Error ? err.message : String(err), 'error');
+        if (toggle) {
+            toggle.checked = !enabled; // Revert on error
+        }
+    } finally {
+        if (toggle) toggle.disabled = false;
+    }
+}
+
 function setEntityTriggersDisabled(disabled) {
-    [houseTrigger, pvTrigger].forEach((btn) => {
+    [houseTrigger, pvTrigger, batteryTrigger].forEach((btn) => {
         if (!btn) return;
         if (disabled) {
             btn.setAttribute('disabled', 'disabled');
@@ -1068,13 +1099,7 @@ function setEntityTriggersDisabled(disabled) {
             btn.removeAttribute('disabled');
         }
     });
-    if (batteryTrigger) {
-        if (disabled) {
-            batteryTrigger.setAttribute('disabled', 'disabled');
-        } else if (!batteryBusy && batteryEntityCatalog.length) {
-            batteryTrigger.removeAttribute('disabled');
-        }
-    }
+    
     if (batteryWearInput) {
         if (disabled || batteryBusy) {
             batteryWearInput.setAttribute('disabled', 'disabled');
@@ -1090,82 +1115,64 @@ function setEntityTriggersDisabled(disabled) {
         }
     }
     renderBatteryForm();
+    renderHAEntitiesForm();
 }
 
-async function updateInverterSelection(key, entityId) {
-    if (!inverterSettings || inverterBusy) return;
-    const current = inverterSettings[key] ? inverterSettings[key].entity_id : null;
+async function updateHAEntitySelection(key, entityId) {
+    if (!haEntitiesSettings || haEntitiesBusy) return;
+    const current = haEntitiesSettings[key] ? haEntitiesSettings[key].entity_id : null;
     if (entityId === current) return;
-    inverterBusy = true;
+    haEntitiesBusy = true;
     setEntityTriggersDisabled(true);
-    setInverterMessage('Saving selection…');
+    setHAEntitiesMessage('Saving selection…');
     try {
         const payload = await fetchJson('/api/settings', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ inverter: { [key]: { entity_id: entityId } } }),
+            body: JSON.stringify({ ha_entities: { [key]: { entity_id: entityId } } }),
         });
         applySettingsPayload(payload);
-        setInverterMessage('Saved. Re-run training to refresh the models with the new inputs.', 'success');
+        setHAEntitiesMessage('Saved. Re-run training to refresh the models with the new inputs.', 'success');
     } catch (err) {
-        setInverterMessage(err instanceof Error ? err.message : String(err), 'error');
+        setHAEntitiesMessage(err instanceof Error ? err.message : String(err), 'error');
     } finally {
-        inverterBusy = false;
+        haEntitiesBusy = false;
         setEntityTriggersDisabled(false);
-        if (inverterSettings) {
-            renderInverterForm();
+        if (haEntitiesSettings) {
+            renderHAEntitiesForm();
         }
     }
 }
 
 async function updateExportLimitSetting(enabled) {
-    if (!inverterSettings || inverterBusy) return;
-    inverterBusy = true;
+    if (!haEntitiesSettings || haEntitiesBusy) return;
+    haEntitiesBusy = true;
     setEntityTriggersDisabled(true);
-    setInverterMessage('Saving selection…');
+    setHAEntitiesMessage('Saving selection…');
     try {
         const payload = await fetchJson('/api/settings', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ inverter: { export_power_limited: Boolean(enabled) } }),
+            body: JSON.stringify({ ha_entities: { export_power_limited: Boolean(enabled) } }),
         });
         applySettingsPayload(payload);
-        setInverterMessage('Saved export limit preference. Re-run training to incorporate the change.', 'success');
+        setHAEntitiesMessage('Saved export limit preference. Re-run training to incorporate the change.', 'success');
     } catch (err) {
-        setInverterMessage(err instanceof Error ? err.message : String(err), 'error');
+        setHAEntitiesMessage(err instanceof Error ? err.message : String(err), 'error');
         if (exportLimitToggle) {
-            exportLimitToggle.checked = Boolean(inverterSettings.export_power_limited);
+            exportLimitToggle.checked = Boolean(haEntitiesSettings.export_power_limited);
         }
     } finally {
-        inverterBusy = false;
+        haEntitiesBusy = false;
         setEntityTriggersDisabled(false);
-        if (inverterSettings) {
-            renderInverterForm();
+        if (haEntitiesSettings) {
+            renderHAEntitiesForm();
         }
     }
 }
 
 async function updateBatterySelection(entityId) {
-    if (!batterySettings || batteryBusy) return;
-    const current = batterySettings.soc_sensor && batterySettings.soc_sensor.entity_id ? batterySettings.soc_sensor.entity_id : null;
-    if (!entityId || entityId === current) return;
-    batteryBusy = true;
-    renderBatteryForm();
-    setBatteryMessage('Saving selection…');
-    try {
-        const payload = await fetchJson('/api/settings', {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ battery: { soc_sensor: { entity_id: entityId } } }),
-        });
-        applySettingsPayload(payload);
-        setBatteryMessage('Saved. Future optimizations will start from this sensor reading.', 'success');
-    } catch (err) {
-        setBatteryMessage(err instanceof Error ? err.message : String(err), 'error');
-    } finally {
-        batteryBusy = false;
-        renderBatteryForm();
-    }
+    return updateHAEntitySelection('soc_sensor', entityId);
 }
 
 async function submitBatteryConfig(partial, options = {}) {
@@ -1274,7 +1281,7 @@ function handleBatteryNumericInput(fieldKey) {
 function openEntityModal(target) {
     if (!entityModal) return;
     entityModalTarget = target;
-    if (target === 'battery_soc') {
+    if (target === 'soc_sensor') {
         if (!batteryEntityCatalog.length) {
             setBatteryMessage('No battery sensors detected. Expose a sensor with % unit to proceed.', 'error');
         } else {
@@ -1283,7 +1290,7 @@ function openEntityModal(target) {
         lastEntityTrigger = batteryTrigger;
     } else {
         if (!powerEntityCatalog.length) {
-            setInverterMessage('No power sensors detected. Expose Home Assistant sensors with power readings to proceed.', 'error');
+            setHAEntitiesMessage('No power sensors detected. Expose Home Assistant sensors with power readings to proceed.', 'error');
             return;
         }
         lastEntityTrigger = target === 'pv_power' ? pvTrigger : houseTrigger;
@@ -1292,7 +1299,7 @@ function openEntityModal(target) {
     if (modalTitle) {
         if (target === 'pv_power') {
             modalTitle.textContent = 'Select PV sensor';
-        } else if (target === 'battery_soc') {
+        } else if (target === 'soc_sensor') {
             modalTitle.textContent = 'Select battery SoC sensor';
         } else {
             modalTitle.textContent = 'Select house sensor';
@@ -1333,17 +1340,15 @@ function renderEntityList(searchTerm) {
     let catalog = [];
     let filterByDomain = null;
 
-    if (entityModalTarget === 'battery_soc') {
+    if (entityModalTarget === 'soc_sensor') {
         catalog = batteryEntityCatalog;
     } else if (entityModalTarget === 'DRIVER_CONFIG') {
-        // For driver config, use full entity catalog and filter by domain
         catalog = entityCatalog;
-        filterByDomain = activeDriverEntityDomain; // e.g., 'select', 'number', 'sensor'
+        filterByDomain = activeDriverEntityDomain;
     } else {
         catalog = powerEntityCatalog;
     }
 
-    // Filter by search term and domain if applicable
     let items = catalog.filter((item) => matchesEntity(item, term));
     if (filterByDomain) {
         items = items.filter((item) => item.entity_id.startsWith(filterByDomain + '.'));
@@ -1355,7 +1360,7 @@ function renderEntityList(searchTerm) {
         empty.className = 'entity-empty';
         if (term) {
             empty.textContent = `No matching ${filterByDomain || 'entities'} found.`;
-        } else if (entityModalTarget === 'battery_soc') {
+        } else if (entityModalTarget === 'soc_sensor') {
             empty.textContent = 'No battery sensors available.';
         } else if (filterByDomain) {
             empty.textContent = `No ${filterByDomain} entities available.`;
@@ -1367,7 +1372,6 @@ function renderEntityList(searchTerm) {
     }
     let current = null;
 
-    // Add "Clear" or "Use Default" option
     const noneOption = document.createElement('button');
     noneOption.type = 'button';
     noneOption.className = 'entity-option';
@@ -1385,24 +1389,19 @@ function renderEntityList(searchTerm) {
         `;
     }
 
-    // Handle click
     noneOption.addEventListener('click', () => {
         const targetKey = entityModalTarget;
         closeEntityModal();
         if (targetKey === 'DRIVER_CONFIG') {
             if (activeDriverEntityCallback) activeDriverEntityCallback(null);
-        } else if (targetKey === 'battery_soc') {
-            updateBatterySelection(null);
         } else if (targetKey) {
-            updateInverterSelection(targetKey, null);
+            updateHAEntitySelection(targetKey, null);
         }
     });
     entityListContainer.appendChild(noneOption);
 
-    if (entityModalTarget === 'battery_soc') {
-        current = batterySettings && batterySettings.soc_sensor ? batterySettings.soc_sensor.entity_id : null;
-    } else if (entityModalTarget && inverterSettings && inverterSettings[entityModalTarget]) {
-        current = inverterSettings[entityModalTarget].entity_id;
+    if (entityModalTarget && haEntitiesSettings && haEntitiesSettings[entityModalTarget]) {
+        current = haEntitiesSettings[entityModalTarget].entity_id;
     }
     items.forEach((item) => {
         const option = document.createElement('button');
@@ -1422,10 +1421,8 @@ function renderEntityList(searchTerm) {
             closeEntityModal();
             if (targetKey === 'DRIVER_CONFIG') {
                 if (activeDriverEntityCallback) activeDriverEntityCallback(item.entity_id);
-            } else if (targetKey === 'battery_soc') {
-                updateBatterySelection(item.entity_id);
             } else if (targetKey) {
-                updateInverterSelection(targetKey, item.entity_id);
+                updateHAEntitySelection(targetKey, item.entity_id);
             }
         });
         entityListContainer.appendChild(option);
@@ -1729,7 +1726,17 @@ function ensurePlanChart() {
                 },
             },
             plugins: {
-                legend: { display: true },
+                legend: { 
+                    display: true,
+                    labels: {
+                        filter: function(item, chart) {
+                            // Hide datasets that are hidden
+                            const ds = chart.datasets[item.datasetIndex];
+                            if (ds.hidden) return false;
+                            return true;
+                        }
+                    }
+                },
                 tooltip: {
                     callbacks: {
                         afterLabel(context) {
@@ -1859,6 +1866,11 @@ function applyForecast(payload) {
     planChart.data.datasets[0].data = sanitizedExportPrice;
     planChart.data.datasets[1].data = sanitizedImportPrice;
     planChart.data.datasets[2].data = sanitizedSoc;
+
+    // Hide export price if export is disabled
+    const exportEnabled = pricingSettings && pricingSettings.export_enabled !== false;
+    planChart.data.datasets[0].hidden = !exportEnabled;
+
     planChart.data.datasets[0].segment = {
         borderDash: (ctx) => (segmentImputed(ctx) ? [6, 4] : []),
     };
@@ -1955,125 +1967,132 @@ function renderControlForm() {
         select.value = currentDriverConfig.driver_id;
     }
 
-    renderDriverConfigFields();
+    renderHAEntitiesTable();
 
-    select.removeEventListener('change', renderDriverConfigFields);
-    select.addEventListener('change', renderDriverConfigFields);
+    select.removeEventListener('change', renderHAEntitiesTable);
+    select.addEventListener('change', renderHAEntitiesTable);
 }
 
-function renderDriverConfigFields() {
+function renderHAEntitiesTable() {
     const select = document.getElementById('driverSelect');
-    const container = document.getElementById('driverConfigContainer');
+    const container = document.getElementById('haEntitiesTableContainer');
     if (!select || !container) return;
 
     const driverId = select.value;
     container.innerHTML = '';
 
-    if (!driverId) return;
+    const table = document.createElement('table');
+    table.className = 'driver-entity-table';
+    table.innerHTML = `
+        <thead>
+            <tr>
+                <th>Entity</th>
+                <th>Domain</th>
+                <th>Entity ID</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    `;
+    const tbody = table.querySelector('tbody');
 
-    const driver = availableDrivers.find(d => d.id === driverId);
-    if (!driver) return;
+    // --- Driver Entities ---
+    let driver = null;
+    if (driverId) {
+        driver = availableDrivers.find(d => d.id === driverId);
+        if (driver && driver.required_entities && driver.required_entities.length > 0) {
+            driver.required_entities.forEach(entityObj => {
+                const row = document.createElement('tr');
 
-    // Entity Mapping
-    if (driver.required_entities && driver.required_entities.length > 0) {
-        const entityHeader = document.createElement('h4');
-        entityHeader.textContent = "Entity Mapping";
-        container.appendChild(entityHeader);
+                const labelCell = document.createElement('td');
+                labelCell.textContent = entityObj.label || entityObj.key.replace(/_/g, ' ');
+                row.appendChild(labelCell);
 
-        const table = document.createElement('table');
-        table.className = 'driver-entity-table';
-        table.innerHTML = `
-            <thead>
-                <tr>
-                    <th>Required Entity</th>
-                    <th>Domain</th>
-                    <th>Entity ID</th>
-                </tr>
-            </thead>
-            <tbody></tbody>
-        `;
+                const domainCell = document.createElement('td');
+                domainCell.textContent = entityObj.domain;
+                domainCell.className = 'driver-entity-domain';
+                row.appendChild(domainCell);
 
-        const tbody = table.querySelector('tbody');
+                const entityCell = document.createElement('td');
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'driver-entity-button';
+                if (haEntitiesBusy) button.disabled = true;
 
-        driver.required_entities.forEach(entityObj => {
-            const row = document.createElement('tr');
-
-            // Label cell
-            const labelCell = document.createElement('td');
-            labelCell.textContent = entityObj.label || entityObj.key.replace(/_/g, ' ');
-            row.appendChild(labelCell);
-
-            // Domain cell (moved before Entity ID)
-            const domainCell = document.createElement('td');
-            domainCell.textContent = entityObj.domain;
-            domainCell.className = 'driver-entity-domain';
-            row.appendChild(domainCell);
-
-            // Entity ID cell (now clickable button)
-            const entityCell = document.createElement('td');
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'driver-entity-button';
-
-            const currentVal = currentDriverConfig.entity_map ? currentDriverConfig.entity_map[entityObj.key] : null;
-            const displayValue = currentVal || entityObj.default || 'Click to select...';
-            button.textContent = displayValue;
-            button.dataset.default = entityObj.default || '';
-
-            // Validation and color coding
-            const validateEntity = (val) => {
-                button.classList.remove('valid-default', 'valid-custom', 'invalid');
-
-                if (!val || val === 'Click to select...') {
-                    button.classList.add('invalid');
-                    return;
-                }
-
-                // Check if entity exists in catalog
-                const exists = entityCatalog.some(e => e.entity_id === val);
-                const matchesDomain = val.startsWith(entityObj.domain + '.');
-
-                if (exists && matchesDomain) {
-                    // Check if this is still the default value (not changed from saved state)
-                    const savedVal = currentDriverConfig.entity_map ? currentDriverConfig.entity_map[entityObj.key] : null;
-                    const isUsingDefault = !savedVal && val === entityObj.default;
-
-                    if (isUsingDefault || val === entityObj.default) {
-                        button.classList.add('valid-default'); // Blue
-                    } else {
-                        button.classList.add('valid-custom'); // Green
+                // Determine current value:
+                // 1. Check driver config (user override for this driver)
+                // 2. If special key (house/pv/soc), check global settings
+                // 3. Fallback to default
+                let currentVal = currentDriverConfig.entity_map ? currentDriverConfig.entity_map[entityObj.key] : null;
+                
+                if (!currentVal && ['house_consumption', 'pv_power', 'soc_sensor'].includes(entityObj.key)) {
+                    if (haEntitiesSettings && haEntitiesSettings[entityObj.key]) {
+                        currentVal = haEntitiesSettings[entityObj.key].entity_id;
+                        // Pre-fill into driver config so it gets saved if user doesn't touch it
+                        if (!currentDriverConfig.entity_map) currentDriverConfig.entity_map = {};
+                        currentDriverConfig.entity_map[entityObj.key] = currentVal;
                     }
-                } else {
-                    button.classList.add('invalid'); // Red
                 }
-            };
 
-            button.onclick = () => {
-                openEntityModalForDriver(entityObj.key, entityObj.domain, entityObj.default, (selectedId) => {
-                    button.textContent = selectedId || entityObj.default || 'Click to select...';
-                    if (!currentDriverConfig.entity_map) currentDriverConfig.entity_map = {};
-                    currentDriverConfig.entity_map[entityObj.key] = selectedId;
-                    validateEntity(selectedId || entityObj.default);
-                });
-            };
+                const displayValue = currentVal || entityObj.default || 'Click to select...';
+                button.textContent = displayValue;
+                button.dataset.default = entityObj.default || '';
 
-            // Initial validation
-            validateEntity(displayValue);
+                const validateEntity = (val) => {
+                    button.classList.remove('valid-default', 'valid-custom', 'invalid');
 
-            entityCell.appendChild(button);
-            row.appendChild(entityCell);
+                    if (!val || val === 'Click to select...') {
+                        button.classList.add('invalid');
+                        return;
+                    }
 
-            tbody.appendChild(row);
-        });
+                    const exists = entityCatalog.some(e => e.entity_id === val);
+                    const matchesDomain = val.startsWith(entityObj.domain + '.');
 
-        container.appendChild(table);
+                    if (exists && matchesDomain) {
+                        const savedVal = currentDriverConfig.entity_map ? currentDriverConfig.entity_map[entityObj.key] : null;
+                        const isUsingDefault = !savedVal && val === entityObj.default;
+
+                        if (isUsingDefault || val === entityObj.default) {
+                            button.classList.add('valid-default'); 
+                        } else {
+                            button.classList.add('valid-custom'); 
+                        }
+                    } else {
+                        button.classList.add('invalid'); 
+                    }
+                };
+
+                button.onclick = () => {
+                    openEntityModalForDriver(entityObj.key, entityObj.domain, entityObj.default, (selectedId) => {
+                        button.textContent = selectedId || entityObj.default || 'Click to select...';
+                        if (!currentDriverConfig.entity_map) currentDriverConfig.entity_map = {};
+                        currentDriverConfig.entity_map[entityObj.key] = selectedId;
+                        validateEntity(selectedId || entityObj.default);
+                    });
+                };
+
+                validateEntity(displayValue);
+
+                entityCell.appendChild(button);
+                row.appendChild(entityCell);
+
+                tbody.appendChild(row);
+            });
+        }
     }
+    
+    container.appendChild(table);
 
     // Driver Config
-    if (driver.config_schema && Object.keys(driver.config_schema).length > 0) {
+    if (driver && driver.config_schema && Object.keys(driver.config_schema).length > 0) {
         const configHeader = document.createElement('h4');
         configHeader.textContent = "Driver Configuration";
+        configHeader.style.marginTop = "1.5rem";
+        configHeader.style.marginBottom = "0.5rem";
         container.appendChild(configHeader);
+
+        const grid = document.createElement('div');
+        grid.className = 'driver-config-grid';
 
         driver.config_schema.forEach(schemaItem => {
             const key = schemaItem.key;
@@ -2087,7 +2106,6 @@ function renderDriverConfigFields() {
             field.appendChild(label);
 
             const input = document.createElement('input');
-            // Basic type mapping
             if (type === 'float' || type === 'int') {
                 input.type = 'number';
                 input.step = type === 'float' ? '0.1' : '1';
@@ -2095,10 +2113,16 @@ function renderDriverConfigFields() {
                 input.type = 'text';
             }
 
-            const val = currentDriverConfig.config ? currentDriverConfig.config[key] : '';
-            // Use default if value is not set
-            const displayVal = val !== undefined && val !== '' ? val : (schemaItem.default !== undefined ? schemaItem.default : '');
-            input.value = displayVal;
+            const val = currentDriverConfig.config ? currentDriverConfig.config[key] : undefined;
+            // Use default if value is missing
+            const effectiveVal = val !== undefined && val !== '' ? val : (schemaItem.default !== undefined ? schemaItem.default : '');
+            input.value = effectiveVal;
+
+            // Ensure the config object has this value if it was missing, so it gets saved
+            if (val === undefined && schemaItem.default !== undefined) {
+                 if (!currentDriverConfig.config) currentDriverConfig.config = {};
+                 currentDriverConfig.config[key] = schemaItem.default;
+            }
 
             input.onchange = (e) => {
                 if (!currentDriverConfig.config) currentDriverConfig.config = {};
@@ -2109,8 +2133,9 @@ function renderDriverConfigFields() {
             };
 
             field.appendChild(input);
-            container.appendChild(field);
+            grid.appendChild(field);
         });
+        container.appendChild(grid);
     }
 }
 
@@ -2141,11 +2166,31 @@ async function saveControlSettings() {
     btn.disabled = true;
     btn.textContent = 'Saving...';
 
-    const msg = document.getElementById('controlMessage');
-    msg.style.display = 'none';
-    msg.classList.remove('error', 'success');
+    setHAEntitiesMessage('');
 
     try {
+        // Sync special entities to global settings if present in driver config
+        const specialKeys = ['house_consumption', 'pv_power', 'soc_sensor'];
+        const globalUpdates = {};
+        let hasGlobalUpdates = false;
+
+        if (currentDriverConfig.entity_map) {
+            specialKeys.forEach(key => {
+                if (currentDriverConfig.entity_map[key]) {
+                    globalUpdates[key] = { entity_id: currentDriverConfig.entity_map[key] };
+                    hasGlobalUpdates = true;
+                }
+            });
+        }
+
+        if (hasGlobalUpdates) {
+            await fetchJson('/api/settings', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ha_entities: globalUpdates }),
+            });
+        }
+
         await fetchJson('/api/settings/inverter-driver', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2155,13 +2200,9 @@ async function saveControlSettings() {
                 config: currentDriverConfig.config || {}
             })
         });
-        msg.textContent = 'Settings saved successfully.';
-        msg.classList.add('success');
-        msg.style.display = 'block';
+        setHAEntitiesMessage('Settings saved successfully.', 'success');
     } catch (err) {
-        msg.textContent = 'Failed to save: ' + err.message;
-        msg.classList.add('error');
-        msg.style.display = 'block';
+        setHAEntitiesMessage('Failed to save: ' + err.message, 'error');
     } finally {
         btn.disabled = false;
         btn.textContent = originalText;
@@ -2275,6 +2316,37 @@ window.addEventListener('DOMContentLoaded', () => {
             updateExportLimitSetting(event.target.checked);
         });
     }
+    const exportEnabledToggle = document.getElementById('exportEnabledToggle');
+    if (exportEnabledToggle) {
+        exportEnabledToggle.addEventListener('change', (event) => {
+            ensurePricingSettings();
+            pricingSettings.export_enabled = event.target.checked;
+            renderPricingForm();
+            schedulePricingSave();
+        });
+    }
+    const exportPowerLimitInput = document.getElementById('exportPowerLimit');
+    if (exportPowerLimitInput) {
+        const handler = (event) => {
+            ensurePricingSettings();
+            const raw = event.target.value.trim();
+            if (!raw) {
+                pricingSettings.export_limit_kw = null;
+            } else {
+                const val = Number(raw);
+                pricingSettings.export_limit_kw = Number.isFinite(val) && val >= 0 ? val : null;
+            }
+            schedulePricingSave();
+        };
+        exportPowerLimitInput.addEventListener('change', handler);
+        exportPowerLimitInput.addEventListener('blur', handler);
+    }
+    const autoTrainingToggle = document.getElementById('autoTrainingToggle');
+    if (autoTrainingToggle) {
+        autoTrainingToggle.addEventListener('change', (event) => {
+            updateAutoTrainingSetting(event.target.checked);
+        });
+    }
     [entityModalBackdrop, entityModalClose, entityModalCancel].forEach((element) => {
         bindClick(element, closeEntityModal);
     });
@@ -2307,7 +2379,7 @@ window.addEventListener('DOMContentLoaded', () => {
     loadControlSettings();
     updateViewMode();
     renderIntervention(null, 'Current intervention: Not available');
-    activateSettingsTab('inverter');
+    activateSettingsTab('control');
 
     const controlSwitch = document.getElementById('controlSwitch');
     if (controlSwitch) {

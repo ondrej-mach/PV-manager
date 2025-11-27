@@ -276,36 +276,46 @@ class AppContext:
         return self._inverter_manager
 
     def _load_inverter_driver_config(self) -> None:
-        # Load from a separate file or extend settings.json. 
-        # For simplicity, let's use a separate json file for now or just keep it in memory if persistence isn't strictly required yet.
-        # But task says "Test configuration persistence", so we should save it.
-        # Let's use a simple json file next to settings.json
-        config_path = self.models_dir.parent / "inverter_driver.json"
-        if config_path.exists():
-            try:
-                import json
-                data = json.loads(config_path.read_text())
-                self._inverter_manager.set_active_driver(
-                    data.get("driver_id"),
-                    data.get("entity_map", {}),
-                    data.get("config", {})
-                )
-            except Exception as exc:
-                _LOGGER.error("Failed to load inverter driver config: %s", exc)
+        # Load from settings
+        ha_entities = self._settings.ha_entities
+        if ha_entities.driver_id:
+            self._inverter_manager.set_active_driver(
+                ha_entities.driver_id,
+                ha_entities.entity_map,
+                ha_entities.driver_config
+            )
+        else:
+            # Migration: Try to load from old inverter_driver.json
+            config_path = self.models_dir.parent / "inverter_driver.json"
+            if config_path.exists():
+                try:
+                    import json
+                    data = json.loads(config_path.read_text())
+                    driver_id = data.get("driver_id")
+                    if driver_id:
+                        entity_map = data.get("entity_map", {})
+                        config = data.get("config", {})
+                        self._inverter_manager.set_active_driver(driver_id, entity_map, config)
+                        
+                        # Save to new settings structure
+                        # We can't await here easily as this is sync, but we can update settings object
+                        # and save it. Since this runs at startup, we can just write it.
+                        self._settings.ha_entities.driver_id = driver_id
+                        self._settings.ha_entities.entity_map = entity_map
+                        self._settings.ha_entities.driver_config = config
+                        save_settings(self._settings)
+                        _LOGGER.info("Migrated inverter driver config to settings")
+                except Exception as exc:
+                    _LOGGER.error("Failed to migrate inverter driver config: %s", exc)
 
     async def save_inverter_driver_config(self, driver_id: str, entity_map: dict, config: dict) -> None:
         self._inverter_manager.set_active_driver(driver_id, entity_map, config)
-        config_path = self.models_dir.parent / "inverter_driver.json"
-        try:
-            import json
-            data = {
-                "driver_id": driver_id,
-                "entity_map": entity_map,
-                "config": config
-            }
-            config_path.write_text(json.dumps(data, indent=2))
-        except Exception as exc:
-            _LOGGER.error("Failed to save inverter driver config: %s", exc)
+        async with self._settings_lock:
+            self._settings.ha_entities.driver_id = driver_id
+            self._settings.ha_entities.entity_map = entity_map
+            self._settings.ha_entities.driver_config = config
+            save_settings(self._settings)
+
 
     async def stop(self) -> None:
         # Disable control on shutdown to reset inverter to safe state
@@ -376,6 +386,21 @@ class AppContext:
         while True:
             try:
                 await self.run_cycle()
+                
+                # Check for auto-training
+                if self._settings.auto_training_enabled:
+                    now = datetime.now(timezone.utc)
+                    # Run training if it's between 02:00 and 03:00 UTC and not running
+                    if now.hour == 2 and not self._training_status.running:
+                        # Check if we already trained today
+                        last_run = self._training_status.finished_at
+                        if not last_run or last_run.date() < now.date():
+                            _LOGGER.info("Triggering scheduled auto-training")
+                            try:
+                                await self.trigger_training()
+                            except Exception as exc:
+                                _LOGGER.error("Auto-training failed to start: %s", exc)
+
             except Exception as exc:  # pragma: no cover - defensive
                 _LOGGER.exception("Forecast cycle failed: %s", exc)
                 self._last_cycle_error = str(exc)
@@ -671,16 +696,23 @@ class AppContext:
             serialized = self._serialize_settings(self._settings)
         return await self._build_settings_response(serialized)
 
-    async def update_inverter_settings(self, data: Dict[str, Any]) -> dict[str, Any]:
+    async def update_ha_entities_settings(self, data: Dict[str, Any]) -> dict[str, Any]:
         payload = self._require_mapping(data)
         catalog = await self.refresh_statistics_catalog()
         catalog_map: Dict[str, Any] = {str(item.get("statistic_id")): item for item in catalog if item.get("statistic_id")}
+        
+        entities = await self.refresh_entity_catalog()
+        entity_map_catalog: Dict[str, Any] = {
+            str(item.get("entity_id")): item
+            for item in entities
+            if isinstance(item, dict) and item.get("entity_id")
+        }
 
         changed = False
         catalog_changed = False
         async with self._settings_lock:
             settings = self._settings
-            inverter = settings.inverter
+            ha_entities = settings.ha_entities
 
             async def _apply(key: str, current: Optional[EntitySelection]) -> Tuple[Optional[EntitySelection], bool]:
                 block = payload.get(key)
@@ -688,19 +720,35 @@ class AppContext:
                     return current, False
                 return await self._update_entity_selection(current, block, catalog_map)
 
-            new_house, changed_house = await _apply("house_consumption", inverter.house_consumption)
+            new_house, changed_house = await _apply("house_consumption", ha_entities.house_consumption)
             if new_house is not None:
-                inverter.house_consumption = new_house
+                ha_entities.house_consumption = new_house
                 if changed_house:
                     changed = True
                     catalog_changed = True
 
-            new_pv, changed_pv = await _apply("pv_power", inverter.pv_power)
+            new_pv, changed_pv = await _apply("pv_power", ha_entities.pv_power)
             if new_pv is not None:
-                inverter.pv_power = new_pv
+                ha_entities.pv_power = new_pv
                 if changed_pv:
                     changed = True
                     catalog_changed = True
+
+            if "soc_sensor" in payload:
+                block = payload.get("soc_sensor")
+                if block is None:
+                    if ha_entities.soc_sensor is not None:
+                        ha_entities.soc_sensor = None
+                        changed = True
+                elif isinstance(block, dict):
+                    # Use entity_map_catalog for soc_sensor as it might not be a statistic
+                    ha_entities.soc_sensor, sensor_changed = await self._update_entity_selection(
+                        ha_entities.soc_sensor, block, entity_map_catalog
+                    )
+                    if sensor_changed:
+                        changed = True
+                else:
+                    raise ValueError("soc_sensor must be null or an object with entity_id")
 
             if "export_power_limited" in payload:
                 flag = payload.get("export_power_limited")
@@ -718,8 +766,8 @@ class AppContext:
                     flag_bool = False
                 else:
                     raise ValueError("export_power_limited must be a boolean")
-                if inverter.export_power_limited != flag_bool:
-                    inverter.export_power_limited = flag_bool
+                if ha_entities.export_power_limited != flag_bool:
+                    ha_entities.export_power_limited = flag_bool
                     changed = True
 
             if changed:
@@ -734,13 +782,6 @@ class AppContext:
 
     async def update_battery_settings(self, data: Dict[str, Any]) -> dict[str, Any]:
         payload = self._require_mapping(data)
-
-        entities = await self.refresh_entity_catalog()
-        entity_map: Dict[str, Any] = {
-            str(item.get("entity_id")): item
-            for item in entities
-            if isinstance(item, dict) and item.get("category") == "battery" and item.get("entity_id")
-        }
 
         changed = False
         async with self._settings_lock:
@@ -763,21 +804,6 @@ class AppContext:
                 if not math.isfinite(numeric) or not (minimum <= numeric <= maximum):
                     raise ValueError(f"{name} must be between {minimum} and {maximum}")
                 return numeric
-            if "soc_sensor" in payload:
-                block = payload.get("soc_sensor")
-                if block is None:
-                    if battery.soc_sensor is not None:
-                        battery.soc_sensor = None
-                        changed = True
-                elif isinstance(block, dict):
-                    # Use the shared helper
-                    battery.soc_sensor, sensor_changed = await self._update_entity_selection(
-                        battery.soc_sensor, block, entity_map
-                    )
-                    if sensor_changed:
-                        changed = True
-                else:
-                    raise ValueError("soc_sensor must be null or an object with entity_id")
 
             if "wear_cost_eur_per_kwh" in payload:
                 raw_cost = payload.get("wear_cost_eur_per_kwh")
@@ -854,13 +880,18 @@ class AppContext:
         refresh_entities = False
 
         # Update each section if present in payload
-        if "inverter" in payload:
-            # Inverter updates may require catalog refresh
-            result = await self.update_inverter_settings(payload["inverter"])
+        if "ha_entities" in payload:
+            # HA entities updates may require catalog refresh
+            result = await self.update_ha_entities_settings(payload["ha_entities"])
             # Extract refresh flags from result by checking if catalogs changed
             # The update already saved settings and refreshed catalogs if needed
             # We'll skip the final refresh since it was already done
             return result  # Already includes full response
+        
+        # Backward compatibility for "inverter" key
+        if "inverter" in payload:
+             result = await self.update_ha_entities_settings(payload["inverter"])
+             return result
 
         if "battery" in payload:
             await self.update_battery_settings(payload["battery"])
@@ -956,9 +987,9 @@ class AppContext:
 
         async with self._settings_lock:
             settings = self._settings
-            inverter = settings.inverter
+            ha_entities = settings.ha_entities
             changed = False
-            for selection in (inverter.house_consumption, inverter.pv_power):
+            for selection in (ha_entities.house_consumption, ha_entities.pv_power):
                 unit = unit_map.get(selection.entity_id)
                 if unit and unit != selection.unit:
                     selection.unit = unit
@@ -1035,12 +1066,12 @@ class AppContext:
         }
 
     async def _attach_recorder_status(self, serialized: dict[str, Any]) -> dict[str, Any]:
-        inverter = serialized.get("inverter")
-        if not isinstance(inverter, dict):
+        ha_entities = serialized.get("ha_entities")
+        if not isinstance(ha_entities, dict):
             return serialized
 
         async def _apply(key: str) -> None:
-            block = inverter.get(key)
+            block = ha_entities.get(key)
             if not isinstance(block, dict):
                 return
             stat_id = block.get("entity_id")
@@ -1080,10 +1111,10 @@ class AppContext:
 
     async def _get_inverter_config(self) -> tuple[List[Tuple[str, str]], Dict[str, str], Dict[str, float]]:
         async with self._settings_lock:
-            inverter = self._settings.inverter
-            stat_ids = list(inverter.stat_ids())
-            rename_map = dict(inverter.rename_map())
-            scales = dict(inverter.scales())
+            ha_entities = self._settings.ha_entities
+            stat_ids = list(ha_entities.stat_ids())
+            rename_map = dict(ha_entities.rename_map())
+            scales = dict(ha_entities.scales())
         return stat_ids, rename_map, scales
 
     async def _get_pricing_config(self) -> PricingSettings:
@@ -1091,41 +1122,7 @@ class AppContext:
             return copy.deepcopy(self._settings.pricing)
 
     def _serialize_settings(self, settings: AppSettings) -> dict[str, Any]:
-        inverter = settings.inverter
-        battery = settings.battery
-        battery_block: dict[str, Any]
-        if battery.soc_sensor:
-            battery_block = {
-                "soc_sensor": {
-                    "entity_id": battery.soc_sensor.entity_id,
-                    "unit": battery.soc_sensor.unit,
-                }
-            }
-        else:
-            battery_block = {"soc_sensor": None}
-        battery_block["wear_cost_eur_per_kwh"] = float(battery.wear_cost_eur_per_kwh)
-        battery_block["capacity_kwh"] = float(battery.capacity_kwh)
-        battery_block["power_limit_kw"] = float(battery.power_limit_kw)
-        battery_block["soc_min"] = float(battery.soc_min)
-        battery_block["soc_max"] = float(battery.soc_max)
-        pricing = settings.pricing
-        return {
-            "inverter": {
-                "house_consumption": {
-                    "entity_id": inverter.house_consumption.entity_id,
-                    "unit": inverter.house_consumption.unit,
-                    "scale_to_kw": inverter.house_consumption.scale_to_kw(),
-                },
-                "pv_power": {
-                    "entity_id": inverter.pv_power.entity_id,
-                    "unit": inverter.pv_power.unit,
-                    "scale_to_kw": inverter.pv_power.scale_to_kw(),
-                },
-                "export_power_limited": bool(inverter.export_power_limited),
-            },
-            "battery": battery_block,
-            "pricing": pricing.to_dict() if pricing else PricingSettings().to_dict(),
-        }
+        return settings.to_dict()
 
     def _run_cycle_sync(
         self,
@@ -1183,15 +1180,16 @@ class AppContext:
         
         # Fetch initial SoC
         initial_soc = 0.5
-        if battery_settings.soc_sensor and battery_settings.soc_sensor.entity_id:
+        soc_sensor = self._settings.ha_entities.soc_sensor
+        if soc_sensor and soc_sensor.entity_id:
             try:
-                state = self._ha.get_entity_state_sync(battery_settings.soc_sensor.entity_id)
+                state = self._ha.get_entity_state_sync(soc_sensor.entity_id)
                 if state:
                     raw_state = state.get("state")
                     if raw_state is not None:
                         val = float(raw_state)
                         # Normalize
-                        initial_soc = self._normalize_soc(val, battery_settings.soc_sensor.unit) or 0.5
+                        initial_soc = self._normalize_soc(val, soc_sensor.unit) or 0.5
             except Exception as exc:
                 _LOGGER.warning("Failed to fetch initial SoC: %s", exc)
 
@@ -1212,6 +1210,8 @@ class AppContext:
             cfg=batt_cfg,
             deg_eur_per_kwh=battery_settings.wear_cost_eur_per_kwh,
             soc0=initial_soc,
+            export_enabled=self._settings.pricing.export_enabled,
+            export_limit_kw=self._settings.pricing.export_limit_kw,
         )
         
         # 4. Detect intervention type from first step
@@ -1290,7 +1290,7 @@ class AppContext:
 
     async def _get_initial_soc(self) -> Optional[float]:
         async with self._settings_lock:
-            selection = self._settings.battery.soc_sensor if self._settings.battery else None
+            selection = self._settings.ha_entities.soc_sensor
             entity_id = selection.entity_id if selection else None
             stored_unit = selection.unit if selection else None
         if not entity_id:
@@ -1324,7 +1324,7 @@ class AppContext:
 
         if state_unit and state_unit != stored_unit:
             async with self._settings_lock:
-                current = self._settings.battery.soc_sensor if self._settings.battery else None
+                current = self._settings.ha_entities.soc_sensor
                 if current and current.entity_id == entity_id and current.unit != state_unit:
                     current.unit = state_unit
                     save_settings(self._settings)

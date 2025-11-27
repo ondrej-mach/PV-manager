@@ -71,6 +71,24 @@ class GoodWeDriver(InverterDriver):
     def get_required_entities(self) -> List[Dict[str, Any]]:
         return [
             {
+                "key": "house_consumption",
+                "label": "House Consumption Sensor",
+                "domain": "sensor",
+                "default": "sensor.house_consumption"
+            },
+            {
+                "key": "pv_power",
+                "label": "PV Production Sensor",
+                "domain": "sensor",
+                "default": "sensor.pv_power"
+            },
+            {
+                "key": "soc_sensor",
+                "label": "Battery SoC Sensor",
+                "domain": "sensor",
+                "default": "sensor.battery_state_of_charge"
+            },
+            {
                 "key": "operation_mode", 
                 "label": "Operation Mode Select", 
                 "domain": "select",

@@ -94,36 +94,16 @@
             <section class="card">
                 <h2>Settings</h2>
                 <nav class="settings-nav">
-                    <button type="button" data-settings-tab="inverter" class="active">Inverter</button>
+                    <button type="button" data-settings-tab="control" class="active">HA Entities</button>
                     <button type="button" data-settings-tab="battery">Battery</button>
-                    <button type="button" data-settings-tab="pv">PV System</button>
-                    <button type="button" data-settings-tab="prices">Energy Prices</button>
+                    <button type="button" data-settings-tab="prices">Grid</button>
                     <button type="button" data-settings-tab="loads">Flexible Loads</button>
-                    <button type="button" data-settings-tab="control">Inverter Control</button>
+                    <button type="button" data-settings-tab="training">Training</button>
                 </nav>
                 <div class="settings-content">
-                    <div data-settings-panel="inverter" class="settings-panel active">
-                        <h3>Inverter Settings</h3>
-                        <p class="message">Select which Home Assistant statistics feed the house consumption and PV
-                            power forecasts. Values are normalized to kW automatically.</p>
-                        <form id="inverterForm" class="settings-form" autocomplete="off">
-                            <div class="field">
-                                <label id="houseEntityLabelText">House consumption sensor</label>
-                                <button type="button" id="houseEntityTrigger" class="entity-trigger"
-                                    data-target="house_consumption"
-                                    aria-labelledby="houseEntityLabelText houseEntityLabel">
-                                    <span class="entity-trigger-text" id="houseEntityLabel">None</span>
-                                    <span class="entity-trigger-hint" aria-hidden="true">⌄</span>
-                                </button>
-                                <p class="hint" id="houseHint">Waiting for Home Assistant…</p>
-                            </div>
-                            <p class="message" id="inverterMessage" style="display:none;"></p>
-                        </form>
-                    </div>
-                    <div data-settings-panel="control" class="settings-panel">
-                        <h3>Inverter Control</h3>
-                        <p class="message">Configure how the add-on controls your inverter. Select a driver and map the
-                            required entities.</p>
+                    <div data-settings-panel="control" class="settings-panel active">
+                        <h3>HA Entities</h3>
+                        <p class="message">Configure Home Assistant entities and the inverter driver.</p>
                         <form id="controlForm" class="settings-form" autocomplete="off">
                             <div class="field">
                                 <label for="driverSelect">Inverter Driver</label>
@@ -131,7 +111,15 @@
                                     <option value="">Select a driver...</option>
                                 </select>
                             </div>
-                            <div id="driverConfigContainer"></div>
+                            <div id="haEntitiesTableContainer"></div>
+                            <div class="field checkbox-field">
+                                <label class="checkbox" for="exportLimitToggle">
+                                    <input type="checkbox" id="exportLimitToggle" aria-describedby="exportLimitHint" />
+                                    <span>PV power is limited by the inverter</span>
+                                </label>
+                                <p class="hint" id="exportLimitHint">Enable when export throttling keeps PV power below
+                                    the array&apos;s potential once batteries are full.</p>
+                            </div>
                             <p class="message" id="controlMessage" style="display:none;"></p>
                             <div class="actions">
                                 <button type="button" id="saveControlBtn" class="primary">Save Configuration</button>
@@ -140,19 +128,8 @@
                     </div>
                     <div data-settings-panel="battery" class="settings-panel">
                         <h3>Battery Settings</h3>
-                        <p class="message">Link a Home Assistant sensor that reports battery state of charge and set how
-                            much each kWh of battery throughput should cost to reflect wear.</p>
+                        <p class="message">Set how much each kWh of battery throughput should cost to reflect wear.</p>
                         <form id="batteryForm" class="settings-form" autocomplete="off">
-                            <div class="field">
-                                <label id="batterySocLabelText">Battery SoC sensor</label>
-                                <button type="button" id="batterySocTrigger" class="entity-trigger"
-                                    data-target="battery_soc" aria-labelledby="batterySocLabelText batterySocLabel">
-                                    <span class="entity-trigger-text" id="batterySocLabel">None</span>
-                                    <span class="entity-trigger-hint" aria-hidden="true">⌄</span>
-                                </button>
-                                <p class="hint" id="batterySocHint">Choose a sensor reporting battery charge in percent
-                                    (0-100) or fraction (0-1).</p>
-                            </div>
                             <div class="field">
                                 <label for="batteryCapacityInput">Usable capacity (kWh)</label>
                                 <input type="number" id="batteryCapacityInput" min="0.1" step="0.1" inputmode="decimal"
@@ -191,31 +168,8 @@
                             <p class="message" id="batteryMessage" style="display:none;"></p>
                         </form>
                     </div>
-                    <div data-settings-panel="pv" class="settings-panel">
-                        <h3>PV System Settings</h3>
-                        <p class="message">Manage installed PV capacity, panel orientation, and performance factors.</p>
-                        <form id="pvSystemForm" class="settings-form" autocomplete="off">
-                            <div class="field">
-                                <label id="pvEntityLabelText">PV production sensor</label>
-                                <button type="button" id="pvEntityTrigger" class="entity-trigger" data-target="pv_power"
-                                    aria-labelledby="pvEntityLabelText pvEntityLabel">
-                                    <span class="entity-trigger-text" id="pvEntityLabel">None</span>
-                                    <span class="entity-trigger-hint" aria-hidden="true">⌄</span>
-                                </button>
-                                <p class="hint" id="pvHint">Waiting for Home Assistant…</p>
-                            </div>
-                            <div class="field checkbox-field">
-                                <label class="checkbox" for="exportLimitToggle">
-                                    <input type="checkbox" id="exportLimitToggle" aria-describedby="exportLimitHint" />
-                                    <span>PV power is limited by the inverter</span>
-                                </label>
-                                <p class="hint" id="exportLimitHint">Enable when export throttling keeps PV power below
-                                    the array&apos;s potential once batteries are full.</p>
-                            </div>
-                        </form>
-                    </div>
                     <div data-settings-panel="prices" class="settings-panel">
-                        <h3>Energy Price Settings</h3>
+                        <h3>Grid Settings</h3>
                         <p class="message">Connect to tariff providers or override price profiles for optimization.</p>
                         <form id="pricingForm" class="settings-form" autocomplete="off">
                             <fieldset class="tariff-group">
@@ -272,54 +226,67 @@
                             </fieldset>
                             <fieldset class="tariff-group">
                                 <legend>Grid export</legend>
-                                <div class="field">
-                                    <label for="exportTariffMode">Mode</label>
-                                    <select id="exportTariffMode" aria-describedby="exportTariffHint">
-                                        <option value="constant">Constant price</option>
-                                        <option value="spot_plus_constant">Spot price with offset</option>
-                                        <option value="dual_rate">Dual-rate schedule</option>
-                                    </select>
-                                    <p class="hint" id="exportTariffHint">Apply a single fixed rate to every interval.
-                                    </p>
+                                <div class="field checkbox-field">
+                                    <label class="checkbox" for="exportEnabledToggle">
+                                        <input type="checkbox" id="exportEnabledToggle" />
+                                        <span>Enable Export</span>
+                                    </label>
                                 </div>
-                                <div class="field" id="exportConstantField" data-tariff-scope="export"
-                                    data-tariff-mode="constant" style="display:none;">
-                                    <label for="exportConstantPrice">Export price (€/kWh)</label>
-                                    <input type="number" id="exportConstantPrice" min="0" step="0.001"
-                                        inputmode="decimal" />
-                                    <p class="hint">Used for every interval when constant pricing is selected.</p>
-                                </div>
-                                <div class="field" id="exportSpotOffsetField" data-tariff-scope="export"
-                                    data-tariff-mode="spot_plus_constant" style="display:none;">
-                                    <label for="exportSpotOffset">Offset from spot price (€/kWh)</label>
-                                    <input type="number" id="exportSpotOffset" step="0.001" inputmode="decimal" />
-                                    <p class="hint">Positive values raise export revenue; negative values lower it
-                                        relative to the spot tariff.</p>
-                                </div>
-                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
-                                    style="display:none;">
-                                    <label for="exportPeakRate">Peak price (€/kWh)</label>
-                                    <input type="number" id="exportPeakRate" min="0" step="0.001" inputmode="decimal" />
-                                </div>
-                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
-                                    style="display:none;">
-                                    <label for="exportOffpeakRate">Off-peak price (€/kWh)</label>
-                                    <input type="number" id="exportOffpeakRate" min="0" step="0.001"
-                                        inputmode="decimal" />
-                                </div>
-                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
-                                    style="display:none;">
-                                    <label for="exportPeakStart">Peak start (local time)</label>
-                                    <input type="text" id="exportPeakStart" inputmode="numeric"
-                                        pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="07:00" />
-                                </div>
-                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
-                                    style="display:none;">
-                                    <label for="exportPeakEnd">Peak end (local time)</label>
-                                    <input type="text" id="exportPeakEnd" inputmode="numeric"
-                                        pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
-                                    <p class="hint">Intervals between start and end use the peak rate; others use the
-                                        off-peak rate.</p>
+                                <div id="exportSettingsContainer">
+                                    <div class="field">
+                                        <label for="exportPowerLimit">Export Power Limit (kW)</label>
+                                        <input type="number" id="exportPowerLimit" min="0" step="0.1" inputmode="decimal" />
+                                        <p class="hint">Maximum power allowed to be exported to the grid. Leave empty for no limit.</p>
+                                    </div>
+                                    <div class="field">
+                                        <label for="exportTariffMode">Mode</label>
+                                        <select id="exportTariffMode" aria-describedby="exportTariffHint">
+                                            <option value="constant">Constant price</option>
+                                            <option value="spot_plus_constant">Spot price with offset</option>
+                                            <option value="dual_rate">Dual-rate schedule</option>
+                                        </select>
+                                        <p class="hint" id="exportTariffHint">Apply a single fixed rate to every interval.
+                                        </p>
+                                    </div>
+                                    <div class="field" id="exportConstantField" data-tariff-scope="export"
+                                        data-tariff-mode="constant" style="display:none;">
+                                        <label for="exportConstantPrice">Export price (€/kWh)</label>
+                                        <input type="number" id="exportConstantPrice" min="0" step="0.001"
+                                            inputmode="decimal" />
+                                        <p class="hint">Used for every interval when constant pricing is selected.</p>
+                                    </div>
+                                    <div class="field" id="exportSpotOffsetField" data-tariff-scope="export"
+                                        data-tariff-mode="spot_plus_constant" style="display:none;">
+                                        <label for="exportSpotOffset">Offset from spot price (€/kWh)</label>
+                                        <input type="number" id="exportSpotOffset" step="0.001" inputmode="decimal" />
+                                        <p class="hint">Positive values raise export revenue; negative values lower it
+                                            relative to the spot tariff.</p>
+                                    </div>
+                                    <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
+                                        style="display:none;">
+                                        <label for="exportPeakRate">Peak price (€/kWh)</label>
+                                        <input type="number" id="exportPeakRate" min="0" step="0.001" inputmode="decimal" />
+                                    </div>
+                                    <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
+                                        style="display:none;">
+                                        <label for="exportOffpeakRate">Off-peak price (€/kWh)</label>
+                                        <input type="number" id="exportOffpeakRate" min="0" step="0.001"
+                                            inputmode="decimal" />
+                                    </div>
+                                    <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
+                                        style="display:none;">
+                                        <label for="exportPeakStart">Peak start (local time)</label>
+                                        <input type="text" id="exportPeakStart" inputmode="numeric"
+                                            pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="07:00" />
+                                    </div>
+                                    <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
+                                        style="display:none;">
+                                        <label for="exportPeakEnd">Peak end (local time)</label>
+                                        <input type="text" id="exportPeakEnd" inputmode="numeric"
+                                            pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
+                                        <p class="hint">Intervals between start and end use the peak rate; others use the
+                                            off-peak rate.</p>
+                                    </div>
                                 </div>
                             </fieldset>
                             <p class="message" id="pricingMessage" style="display:none;"></p>
@@ -328,6 +295,19 @@
                     <div data-settings-panel="loads" class="settings-panel">
                         <h3>Flexible Loads</h3>
                         <p class="message">Schedule controllable appliances and flexibility windows for automation.</p>
+                    </div>
+                    <div data-settings-panel="training" class="settings-panel">
+                        <h3>Model Training</h3>
+                        <p class="message">Configure automated model retraining.</p>
+                        <form id="trainingForm" class="settings-form" autocomplete="off">
+                            <div class="field checkbox-field">
+                                <label class="checkbox" for="autoTrainingToggle">
+                                    <input type="checkbox" id="autoTrainingToggle" />
+                                    <span>Enable automatic nightly training (02:00 UTC)</span>
+                                </label>
+                                <p class="hint">Automatically retrain models every night to adapt to changing conditions.</p>
+                            </div>
+                        </form>
                     </div>
                 </div>
             </section>
