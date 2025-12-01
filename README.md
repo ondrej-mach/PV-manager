@@ -1,41 +1,15 @@
-# PV Manager
+# PV Manager Add-on Repository
 
-Smart energy manager for home photovoltaic systems with battery storage.
+This repository contains the PV Manager Home Assistant add-on.
 
-## Features
+## Add-ons
 
-- **Automatic battery control** - Optimizes battery charging/discharging based on electricity prices and forecasts
-- **ML-based forecasting** - Predicts PV generation and household consumption
-- **Price-aware optimization** - Works with spot pricing and various tariff structures
-- **Home Assistant integration** - Native add-on with full HA integration
-- **Flexible configuration** - Supports multiple inverter drivers and customizable settings
+- [PV Manager](pv-manager/) - Smart energy manager for home photovoltaic systems.
 
 ## Installation
 
-1. Add this repository to your Home Assistant add-on store
-2. Install the PV Manager add-on
-3. Configure your Home Assistant entities in the add-on UI
-4. Select your inverter driver
-5. Enable automatic control
-
-## Configuration
-
-The add-on uses ingress for its web interface - no manual port configuration needed.
-
-All configuration is done through the web UI:
-- **HA Entities**: Configure sensors for PV power, consumption, and battery SoC
-- **Battery**: Set capacity, power limits, and wear costs
-- **Grid**: Configure import/export tariffs (constant, spot-based, or dual-rate)
-- **Training**: Enable automatic nightly model retraining
-
-## Requirements
-
-- Home Assistant with Supervisor
-- Battery storage system with supported inverter
-- PV power sensor
-- House consumption sensor
-- Battery SoC sensor
-
-## Support
-
-For issues and feature requests, visit the [GitHub repository](https://github.com/ondrej-mach/PV-manager).
+1. Copy the URL of this repository.
+2. In Home Assistant, go to **Settings** -> **Add-ons** -> **Add-on Store**.
+3. Click the three dots in the top right corner and select **Repositories**.
+4. Paste the URL and click **Add**.
+5. Find **PV Manager** in the store and install it.

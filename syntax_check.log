@@ -1,9 +1,0 @@
-/home/ondra/Documents/VUT/DIP/src/app/pv_manager/frontend/static/app.js:1843
-
-
-
-SyntaxError: Unexpected end of input
-    at wrapSafe (node:internal/modules/cjs/loader:1638:18)
-    at checkSyntax (node:internal/main/check_syntax:78:3)
-
-Node.js v22.20.0
