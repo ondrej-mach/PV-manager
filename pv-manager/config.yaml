@@ -24,4 +24,4 @@ ports_description:
   8099/tcp: Web interface (not needed when using ingress)
 options: {}
 schema: {}
-image: "ghcr.io/ondrej-mach/pv-manager"
+image: "ghcr.io/ondrej-mach/pv-manager-{arch}"
