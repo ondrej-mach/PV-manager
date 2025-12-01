@@ -37,7 +37,14 @@ _LOGGER = logging.getLogger(__name__)
 
 INTERVAL_MINUTES_DEFAULT = 15
 HORIZON_HOURS_DEFAULT = 24
-MODELS_DIR_DEFAULT = Path("trained_models")
+
+# Use /data for persistent storage in add-on mode, fallback to local directory
+_DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
+if _DATA_DIR.exists() and _DATA_DIR.is_dir():
+    MODELS_DIR_DEFAULT = _DATA_DIR / "trained_models"
+else:
+    MODELS_DIR_DEFAULT = Path("trained_models")
+
 LOOKBACK_DAYS_DEFAULT = 730
 T = TypeVar("T")
 @dataclass
@@ -137,6 +144,7 @@ class AppContext:
         horizon_hours: int = HORIZON_HOURS_DEFAULT,
     ) -> None:
         self.models_dir = Path(models_dir)
+        self.models_dir.mkdir(parents=True, exist_ok=True)
         self.interval_minutes = interval_minutes
         self.horizon_hours = horizon_hours
         self._lock = asyncio.Lock()

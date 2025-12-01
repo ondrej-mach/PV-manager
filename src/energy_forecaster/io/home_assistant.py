@@ -200,12 +200,12 @@ class HomeAssistant:
             if is_cumulative:
                 resampled = series.resample(freq).ffill()
                 diff = resampled.diff().clip(lower=0.0)
-                resampled = diff / hours_per_bucket
+                resampled = diff / hours_per_bucket  # type: ignore[operator]
             else:
                 resampled = series.resample(freq).mean()
         except ValueError:
             if is_cumulative:
-                resampled = series.ffill().diff().clip(lower=0.0) / hours_per_bucket
+                resampled = series.ffill().diff().clip(lower=0.0) / hours_per_bucket  # type: ignore[operator]
             else:
                 resampled = series
 
@@ -239,7 +239,7 @@ class HomeAssistant:
         if series is not None and len(series) > 4:
             diffs = series.diff().dropna()
             if len(diffs) > 0:
-                non_decreasing = (diffs >= -1e-6).sum() / len(diffs)
+                non_decreasing = (diffs >= -1e-6).sum() / len(diffs)  # type: ignore[operator]
                 if non_decreasing > 0.9:
                     median_step = diffs.abs().median()
                     total_range = series.max() - series.min()

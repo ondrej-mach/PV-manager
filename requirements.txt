@@ -1,5 +1,5 @@
 pandas
-numpy
+numpy>=2.0
 scikit-learn
 xgboost
 joblib
@@ -9,7 +9,7 @@ requests-cache
 retry-requests
 matplotlib
 requests
-cvxpy
+cvxpy>=1.5.0
 entsoe-py
 fastapi
 uvicorn[standard]

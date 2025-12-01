@@ -1,0 +1,50 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+venv
+.venv
+*.log
+
+# IDE
+.vscode
+.idea
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov
+
+# Documentation
+docs/
+
+# Data files (these should be in /data at runtime)
+trained_models/
+output/
+*.csv
+*.out
+control_state.json
+inverter_driver.json
+.cache.sqlite
+
+# Benchmarks and tools
+benchmark_data/
+tools/
+tmp/
+
+# Development files
+test_*.py
+recorder_list.out
+syntax_check.log
+home_assistant_history.csv
