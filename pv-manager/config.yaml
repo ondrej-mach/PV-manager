@@ -1,6 +1,6 @@
 name: "PV Manager"
 description: "Smart energy manager for home photovoltaic systems"
-version: "0.2.6"
+version: "0.2.8"
 slug: "pv-manager"
 init: false
 arch:
@@ -22,6 +22,8 @@ ports:
   8099/tcp: null
 ports_description:
   8099/tcp: Web interface (not needed when using ingress)
-options: {}
-schema: {}
+options:
+  entsoe_token: ""
+schema:
+  entsoe_token: str?
 
