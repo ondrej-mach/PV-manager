@@ -7,12 +7,23 @@ import uvicorn
 from pv_manager import create_application
 
 
+
+import logging
+
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
         return default
     raw = raw.strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+# Configure logging with timestamps
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    level=logging.INFO,
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 
 
 def main() -> None:

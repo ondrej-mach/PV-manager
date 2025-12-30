@@ -1,6 +1,6 @@
 name: "PV Manager"
 description: "Smart energy manager for home photovoltaic systems"
-version: "0.2.1"
+version: "0.2.2"
 slug: "pv-manager"
 init: false
 arch:
