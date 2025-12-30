@@ -6,7 +6,7 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PV Manager</title>
-    <link rel="stylesheet" href="static/app.css" />
+    <link rel="stylesheet" href="static/app.css?v=0.2.4" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" defer></script>
 </head>
 
@@ -235,8 +235,10 @@
                                 <div id="exportSettingsContainer">
                                     <div class="field">
                                         <label for="exportPowerLimit">Export Power Limit (kW)</label>
-                                        <input type="number" id="exportPowerLimit" min="0" step="0.1" inputmode="decimal" />
-                                        <p class="hint">Maximum power allowed to be exported to the grid. Leave empty for no limit.</p>
+                                        <input type="number" id="exportPowerLimit" min="0" step="0.1"
+                                            inputmode="decimal" />
+                                        <p class="hint">Maximum power allowed to be exported to the grid. Leave empty
+                                            for no limit.</p>
                                     </div>
                                     <div class="field">
                                         <label for="exportTariffMode">Mode</label>
@@ -245,7 +247,8 @@
                                             <option value="spot_plus_constant">Spot price with offset</option>
                                             <option value="dual_rate">Dual-rate schedule</option>
                                         </select>
-                                        <p class="hint" id="exportTariffHint">Apply a single fixed rate to every interval.
+                                        <p class="hint" id="exportTariffHint">Apply a single fixed rate to every
+                                            interval.
                                         </p>
                                     </div>
                                     <div class="field" id="exportConstantField" data-tariff-scope="export"
@@ -265,7 +268,8 @@
                                     <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
                                         style="display:none;">
                                         <label for="exportPeakRate">Peak price (€/kWh)</label>
-                                        <input type="number" id="exportPeakRate" min="0" step="0.001" inputmode="decimal" />
+                                        <input type="number" id="exportPeakRate" min="0" step="0.001"
+                                            inputmode="decimal" />
                                     </div>
                                     <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
                                         style="display:none;">
@@ -284,7 +288,8 @@
                                         <label for="exportPeakEnd">Peak end (local time)</label>
                                         <input type="text" id="exportPeakEnd" inputmode="numeric"
                                             pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
-                                        <p class="hint">Intervals between start and end use the peak rate; others use the
+                                        <p class="hint">Intervals between start and end use the peak rate; others use
+                                            the
                                             off-peak rate.</p>
                                     </div>
                                 </div>
@@ -305,7 +310,8 @@
                                     <input type="checkbox" id="autoTrainingToggle" />
                                     <span>Enable automatic nightly training (02:00 UTC)</span>
                                 </label>
-                                <p class="hint">Automatically retrain models every night to adapt to changing conditions.</p>
+                                <p class="hint">Automatically retrain models every night to adapt to changing
+                                    conditions.</p>
                             </div>
                         </form>
                     </div>
@@ -330,7 +336,7 @@
             </div>
         </div>
     </div>
-    <script src="static/app.js" defer></script>
+    <script src="static/app.js?v=0.2.4" defer></script>
 
 </body>
 

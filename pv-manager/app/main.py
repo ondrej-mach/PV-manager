@@ -43,7 +43,7 @@ def main() -> None:
         )
     else:
         app = create_application()
-        uvicorn.run(app, host=host, port=port, log_level=log_level)
+        uvicorn.run(app, host=host, port=port, log_level=log_level, proxy_headers=True, forwarded_allow_ips="*")
 
 
 if __name__ == "__main__":
