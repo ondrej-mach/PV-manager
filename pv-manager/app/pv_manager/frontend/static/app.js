@@ -748,7 +748,7 @@ function updateEntityButton(button, labelEl, selection, fallback, busy, hasChoic
 
 function renderHAEntitiesForm() {
     if (!haEntitiesSettings) return;
-    
+
     renderHAEntitiesTable();
 
     if (exportLimitToggle) {
@@ -980,7 +980,7 @@ async function savePricingSettings(manual = false) {
     try {
         const payload = normalizePricingSettings(pricingSettings);
         pricingSettings = payload;
-        const response = await fetchJson('/api/settings', {
+        const response = await fetchJson('api/settings', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ pricing: payload }),
@@ -1041,7 +1041,7 @@ function bindTariffFields() {
 
 async function loadSettingsData() {
     try {
-        const payload = await fetchJson('/api/settings');
+        const payload = await fetchJson('api/settings');
         applySettingsPayload(payload);
         const recorderStatuses = [
             haEntitiesSettings && haEntitiesSettings.house_consumption && haEntitiesSettings.house_consumption.recorder_status,
@@ -1053,7 +1053,7 @@ async function loadSettingsData() {
         if (batteryEntityCatalog.length) {
             setBatteryMessage('');
         }
-        
+
         const autoTrainingToggle = document.getElementById('autoTrainingToggle');
         if (autoTrainingToggle) {
             autoTrainingToggle.checked = Boolean(payload.auto_training_enabled);
@@ -1068,12 +1068,12 @@ async function loadSettingsData() {
 async function updateAutoTrainingSetting(enabled) {
     const toggle = document.getElementById('autoTrainingToggle');
     if (toggle) toggle.disabled = true;
-    
+
     // Use controlMessage (haEntitiesMessage) for feedback
     setHAEntitiesMessage('Saving auto-training preference…');
 
     try {
-        const payload = await fetchJson('/api/settings', {
+        const payload = await fetchJson('api/settings', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ auto_training_enabled: Boolean(enabled) }),
@@ -1099,7 +1099,7 @@ function setEntityTriggersDisabled(disabled) {
             btn.removeAttribute('disabled');
         }
     });
-    
+
     if (batteryWearInput) {
         if (disabled || batteryBusy) {
             batteryWearInput.setAttribute('disabled', 'disabled');
@@ -1126,7 +1126,7 @@ async function updateHAEntitySelection(key, entityId) {
     setEntityTriggersDisabled(true);
     setHAEntitiesMessage('Saving selection…');
     try {
-        const payload = await fetchJson('/api/settings', {
+        const payload = await fetchJson('api/settings', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ha_entities: { [key]: { entity_id: entityId } } }),
@@ -1150,7 +1150,7 @@ async function updateExportLimitSetting(enabled) {
     setEntityTriggersDisabled(true);
     setHAEntitiesMessage('Saving selection…');
     try {
-        const payload = await fetchJson('/api/settings', {
+        const payload = await fetchJson('api/settings', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ha_entities: { export_power_limited: Boolean(enabled) } }),
@@ -1185,7 +1185,7 @@ async function submitBatteryConfig(partial, options = {}) {
         setBatteryMessage(pendingText);
     }
     try {
-        const payload = await fetchJson('/api/settings', {
+        const payload = await fetchJson('api/settings', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ battery: partial }),
@@ -1726,10 +1726,10 @@ function ensurePlanChart() {
                 },
             },
             plugins: {
-                legend: { 
+                legend: {
                     display: true,
                     labels: {
-                        filter: function(item, chart) {
+                        filter: function (item, chart) {
                             // Hide datasets that are hidden
                             const ds = chart.datasets[item.datasetIndex];
                             if (ds.hidden) return false;
@@ -1914,7 +1914,7 @@ function applyForecast(payload) {
 
 async function refreshStatus() {
     try {
-        const payload = await fetchJson('/api/status');
+        const payload = await fetchJson('api/status');
         applyStatus(payload);
     } catch (err) {
         const dot = document.querySelector('#status .dot');
@@ -1934,8 +1934,8 @@ let currentDriverConfig = {};
 async function loadControlSettings() {
     try {
         const [driversPayload, configPayload] = await Promise.all([
-            fetchJson('/api/drivers'),
-            fetchJson('/api/settings/inverter-driver')
+            fetchJson('api/drivers'),
+            fetchJson('api/settings/inverter-driver')
         ]);
         availableDrivers = driversPayload.drivers;
         currentDriverConfig = configPayload || {};
@@ -2023,7 +2023,7 @@ function renderHAEntitiesTable() {
                 // 2. If special key (house/pv/soc), check global settings
                 // 3. Fallback to default
                 let currentVal = currentDriverConfig.entity_map ? currentDriverConfig.entity_map[entityObj.key] : null;
-                
+
                 if (!currentVal && ['house_consumption', 'pv_power', 'soc_sensor'].includes(entityObj.key)) {
                     if (haEntitiesSettings && haEntitiesSettings[entityObj.key]) {
                         currentVal = haEntitiesSettings[entityObj.key].entity_id;
@@ -2053,12 +2053,12 @@ function renderHAEntitiesTable() {
                         const isUsingDefault = !savedVal && val === entityObj.default;
 
                         if (isUsingDefault || val === entityObj.default) {
-                            button.classList.add('valid-default'); 
+                            button.classList.add('valid-default');
                         } else {
-                            button.classList.add('valid-custom'); 
+                            button.classList.add('valid-custom');
                         }
                     } else {
-                        button.classList.add('invalid'); 
+                        button.classList.add('invalid');
                     }
                 };
 
@@ -2080,7 +2080,7 @@ function renderHAEntitiesTable() {
             });
         }
     }
-    
+
     container.appendChild(table);
 
     // Driver Config
@@ -2120,8 +2120,8 @@ function renderHAEntitiesTable() {
 
             // Ensure the config object has this value if it was missing, so it gets saved
             if (val === undefined && schemaItem.default !== undefined) {
-                 if (!currentDriverConfig.config) currentDriverConfig.config = {};
-                 currentDriverConfig.config[key] = schemaItem.default;
+                if (!currentDriverConfig.config) currentDriverConfig.config = {};
+                currentDriverConfig.config[key] = schemaItem.default;
             }
 
             input.onchange = (e) => {
@@ -2184,14 +2184,14 @@ async function saveControlSettings() {
         }
 
         if (hasGlobalUpdates) {
-            await fetchJson('/api/settings', {
+            await fetchJson('api/settings', {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ ha_entities: globalUpdates }),
             });
         }
 
-        await fetchJson('/api/settings/inverter-driver', {
+        await fetchJson('api/settings/inverter-driver', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -2214,7 +2214,7 @@ async function refreshForecast() {
     forecastMessage.textContent = 'Loading latest forecast…';
     forecastMessage.classList.remove('error');
     try {
-        const payload = await fetchJson('/api/forecast');
+        const payload = await fetchJson('api/forecast');
         applyForecast(payload);
     } catch (err) {
         forecastMessage.textContent = err instanceof Error ? err.message : String(err);
@@ -2243,7 +2243,7 @@ async function triggerTraining() {
     button.disabled = true;
     button.textContent = 'Starting…';
     try {
-        await fetchJson('/api/training', { method: 'POST' });
+        await fetchJson('api/training', { method: 'POST' });
     } catch (err) {
         const errorEl = document.getElementById('trainingError');
         errorEl.style.display = 'block';
@@ -2267,7 +2267,7 @@ async function triggerCycle() {
         button.textContent = 'Starting…';
     }
     try {
-        await fetchJson('/api/cycle', { method: 'POST' });
+        await fetchJson('api/cycle', { method: 'POST' });
         if (messageEl) {
             messageEl.style.display = 'block';
             messageEl.textContent = 'Optimization started…';
@@ -2391,7 +2391,7 @@ window.addEventListener('DOMContentLoaded', () => {
             // If enabling, check if driver is configured
             if (newState) {
                 try {
-                    const driverResp = await fetch('/api/settings/inverter-driver');
+                    const driverResp = await fetch('api/settings/inverter-driver');
                     const driverConfig = await driverResp.json();
 
                     if (!driverConfig || !driverConfig.driver_id) {
@@ -2406,7 +2406,7 @@ window.addEventListener('DOMContentLoaded', () => {
             }
 
             try {
-                const response = await fetch('/api/control', {
+                const response = await fetch('api/control', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ active: newState })
