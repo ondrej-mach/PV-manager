@@ -1143,19 +1143,23 @@ class AppContext:
 
         # 1. Run Prediction Pipeline
         _LOGGER.info("Starting forecast cycle")
-        pred_result = run_prediction_pipeline(
-            ha=self._ha,
-            lat=self._lat,
-            lon=self._lon,
-            tz=self._tz,
-            models_dir=str(self.models_dir),
-            horizon_hours=HORIZON_HOURS_DEFAULT,
-            interval_minutes=INTERVAL_MINUTES_DEFAULT,
-            entities=stat_ids,
-            rename_map=rename_map,
-            scales=scales,
-            return_features=True,  # We might need features for debug or advanced logic
-        )
+        try:
+            pred_result = run_prediction_pipeline(
+                ha=self._ha,
+                lat=self._lat,
+                lon=self._lon,
+                tz=self._tz,
+                models_dir=str(self.models_dir),
+                horizon_hours=HORIZON_HOURS_DEFAULT,
+                interval_minutes=INTERVAL_MINUTES_DEFAULT,
+                entities=stat_ids,
+                rename_map=rename_map,
+                scales=scales,
+                return_features=True,  # We might need features for debug or advanced logic
+            )
+        except FileNotFoundError:
+            _LOGGER.warning("Skipping forecast cycle: Trained models not found at %s", self.models_dir)
+            return None
         
         pv_pred = pred_result["pv_pred"]
         house_pred = pred_result["house_pred"]

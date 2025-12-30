@@ -1,36 +1,25 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.11-alpine3.19
-FROM $BUILD_FROM
+# Hardcoded Debian base to ignore HA build args (which force Alpine)
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Python dependencies and build tools
-RUN \
-    apk add --no-cache \
-    python3 \
-    py3-pip \
-    gcc \
-    musl-dev \
-    python3-dev \
-    libffi-dev \
-    openssl-dev \
-    g++ \
-    gfortran \
-    lapack-dev \
-    openblas-dev \
-    cmake \
-    make \
-    git
+# Install system dependencies
+# build-essential: for compiling any missing wheels
+# git: for potential git dependencies
+# libgomp1: required for scikit-learn/xgboost OpenMP support
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    git \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install Python packages
-# Set CFLAGS to suppress warnings that cause build failures in CVXcanon/Eigen
 COPY requirements.txt ./
-RUN CFLAGS="-Wno-int-in-bool-context -Wno-deprecated-declarations" \
-    CXXFLAGS="-Wno-int-in-bool-context -Wno-deprecated-declarations" \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Clean up build dependencies to reduce image size (keep runtime libraries)
-RUN apk del gcc musl-dev python3-dev libffi-dev openssl-dev g++ gfortran cmake make git lapack-dev openblas-dev && \
-    apk add --no-cache openblas lapack
+# (Optional) Clean up build dependencies if minimizing size is desired,
+# but keeping them ensures stability if new pip packages are added.
+# For now, we clean aptitude cache only (done above).
 
 # Copy application and library code
 COPY app/ /app/app/

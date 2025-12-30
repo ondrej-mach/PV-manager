@@ -1,6 +1,6 @@
 name: "PV Manager"
 description: "Smart energy manager for home photovoltaic systems"
-version: "0.2.0"
+version: "0.2.1"
 slug: "pv-manager"
 init: false
 arch:
@@ -24,4 +24,4 @@ ports_description:
   8099/tcp: Web interface (not needed when using ingress)
 options: {}
 schema: {}
-image: "ghcr.io/ondrej-mach/pv-manager-{arch}"
+

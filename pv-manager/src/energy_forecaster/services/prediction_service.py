@@ -114,6 +114,9 @@ def run_prediction_pipeline(
     """
     debug_path = _prepare_debug_path(debug_dir)
 
+    # Load models first - fail fast if missing
+    house_model, pv_model = load_models(models_dir)
+
     # Fetch recent HA data for lags at high resolution
     ENTITIES = entities or [("sensor.house_consumption", "mean"), ("sensor.pv_power", "mean")]
 
@@ -164,8 +167,7 @@ def run_prediction_pipeline(
     _dump_debug_frame(debug_path, "pv_features", pv_X)
     _dump_debug_frame(debug_path, "house_features_template", house_X_template)
 
-    # Load models
-    house_model, pv_model = load_models(models_dir)
+    # Models loaded at start
 
     # Predict PV first
     t0 = time.perf_counter()

@@ -31,6 +31,7 @@ class HomeAssistant:
             url: WebSocket URL. Defaults to supervisor WebSocket URL.
         """
         self.token = token or os.getenv("SUPERVISOR_TOKEN")
+
         self.ws_url = urljoin(instance_url.replace("http", "ws", 1), "/api/websocket") if instance_url else "ws://supervisor/core/websocket"
         self.rest_url = urljoin(instance_url, "/api") if instance_url else "http://supervisor/core/api"
         self._ws: Any = None

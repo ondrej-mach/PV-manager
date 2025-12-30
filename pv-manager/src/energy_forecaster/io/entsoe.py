@@ -5,20 +5,14 @@ from dataclasses import dataclass
 from typing import Optional
 import pandas as pd
 
-DEFAULT_TOKEN_PATH = "/home/ondra/Documents/VUT/DIP/data/ENTSO-E_token.txt"
-
-
-def _read_token(path: str) -> str:
-    with open(path, "r", encoding="utf-8") as f:
-        token = f.read().strip()
-    if not token:
-        raise ValueError("ENTSO-E token file is empty")
-    return token
-
 
 @dataclass
 class EntsoeClientConfig:
-    token_path: str = os.getenv("ENTSOE_TOKEN_PATH", DEFAULT_TOKEN_PATH)
+    # We might keep this class for future config, but token_path is deprecated/unused for now 
+    # based on user request to rely on env var. 
+    # However, to avoid breaking signature if other code uses it, verify usage.
+    # It is used in signature below.
+    pass
 
 
 def guess_country_code_from_tz(tz: str) -> str:
@@ -61,8 +55,12 @@ def fetch_day_ahead_prices_country(
     """
     from entsoe import EntsoePandasClient  # lazy import to avoid hard dependency at module import
 
+    # cfg is currently unused but kept for signature compatibility
     cfg = cfg or EntsoeClientConfig()
-    token = _read_token(cfg.token_path)
+    
+    token = os.getenv("ENTSOE_TOKEN")
+    if not token:
+             raise ValueError("No ENTSO-E token found. Set ENTSOE_TOKEN env var.")
 
     client = EntsoePandasClient(api_key=token)
     # entsoe-py expects tz-aware timestamps in local bidding zone tz
