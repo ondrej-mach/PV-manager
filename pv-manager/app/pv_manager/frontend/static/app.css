@@ -34,16 +34,21 @@
 
 @media (prefers-color-scheme: dark) {
     :root {
-        --bg-color: var(--ha-card-background, #111827);
-        --text-color: var(--primary-text-color, #f9fafb);
+        --color-primary: #03a9f4;
 
-        --card-bg: var(--card-background-color, #1f2937);
+        --bg-color: var(--primary-background-color, #111111);
+        --text-color: var(--primary-text-color, #e1e1e1);
+
+        --card-bg: var(--ha-card-background, #1c1c1c);
         --card-shadow: none;
 
-        --border-color: rgba(255, 255, 255, 0.12);
+        --border-color: var(--divider-color, #2c2c2c);
 
-        --text-muted: rgba(248, 250, 252, 0.92);
-        --text-secondary: rgba(226, 232, 240, 0.88);
+        --text-muted: var(--secondary-text-color, #9b9b9b);
+        --text-secondary: var(--secondary-text-color, #9b9b9b);
+
+        --bg-subtle: rgba(255, 255, 255, 0.05);
+        --bg-hover: rgba(255, 255, 255, 0.1);
     }
 }
 
