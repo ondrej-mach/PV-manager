@@ -31,31 +31,31 @@ def fetch_openmeteo_archive(
     tz: str = "Europe/Prague",
     interval_minutes: int = 60,
 ) -> pd.DataFrame:
-    cache_sess = requests_cache.CachedSession(".cache", expire_after=-1)
-    session = retry(cache_sess, retries=4, backoff_factor=0.2)
-    client = openmeteo_requests.Client(session=session)
+    with requests_cache.CachedSession(".cache", expire_after=-1) as cache_sess:
+        session = retry(cache_sess, retries=4, backoff_factor=0.2)
+        client = openmeteo_requests.Client(session=session)
 
-    start_date = start.date().isoformat()
-    end_date = end.date().isoformat()
+        start_date = start.date().isoformat()
+        end_date = end.date().isoformat()
 
-    url = "https://archive-api.open-meteo.com/v1/archive"
-    hourly_vars: List[str] = [
-        "temperature_2m","relative_humidity_2m","dew_point_2m","rain","precipitation","snowfall",
-        "snow_depth","weather_code","pressure_msl","cloud_cover","wind_speed_10m","wind_speed_100m",
-        "vapour_pressure_deficit","et0_fao_evapotranspiration",
-        "shortwave_radiation","direct_radiation","diffuse_radiation","direct_normal_irradiance",
-    ]
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "start_date": start_date,
-        "end_date": end_date,
-        "hourly": hourly_vars,
-        "timezone": tz,
-    }
+        url = "https://archive-api.open-meteo.com/v1/archive"
+        hourly_vars: List[str] = [
+            "temperature_2m","relative_humidity_2m","dew_point_2m","rain","precipitation","snowfall",
+            "snow_depth","weather_code","pressure_msl","cloud_cover","wind_speed_10m","wind_speed_100m",
+            "vapour_pressure_deficit","et0_fao_evapotranspiration",
+            "shortwave_radiation","direct_radiation","diffuse_radiation","direct_normal_irradiance",
+        ]
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "start_date": start_date,
+            "end_date": end_date,
+            "hourly": hourly_vars,
+            "timezone": tz,
+        }
 
-    responses = client.weather_api(url, params=params)
-    resp = responses[0]
+        responses = client.weather_api(url, params=params)
+        resp = responses[0]
     hourly = resp.Hourly()
 
     idx = pd.date_range(
@@ -134,24 +134,24 @@ def fetch_openmeteo_forecast(
         }
         return pd.DataFrame(data).set_index("timestamp")
 
-    cache_sess = requests_cache.CachedSession(".cache", expire_after=3600)
-    session = retry(cache_sess, retries=4, backoff_factor=0.2)
-    client = openmeteo_requests.Client(session=session)
+    with requests_cache.CachedSession(".cache", expire_after=3600) as cache_sess:
+        session = retry(cache_sess, retries=4, backoff_factor=0.2)
+        client = openmeteo_requests.Client(session=session)
 
-    url = "https://api.open-meteo.com/v1/forecast"
-    now_utc = pd.Timestamp.utcnow()
-    hours_since_midnight = (now_utc - now_utc.floor("D")).total_seconds() / 3600.0
-    hours_needed = hours + math.ceil(hours_since_midnight)
-    forecast_days = max(1, math.ceil(hours_needed / 24))
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "hourly": hourly_vars,
-        "forecast_days": forecast_days,
-        "timezone": "UTC",
-    }
+        url = "https://api.open-meteo.com/v1/forecast"
+        now_utc = pd.Timestamp.utcnow()
+        hours_since_midnight = (now_utc - now_utc.floor("D")).total_seconds() / 3600.0
+        hours_needed = hours + math.ceil(hours_since_midnight)
+        forecast_days = max(1, math.ceil(hours_needed / 24))
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "hourly": hourly_vars,
+            "forecast_days": forecast_days,
+            "timezone": "UTC",
+        }
 
-    responses = client.weather_api(url, params=params)
+        responses = client.weather_api(url, params=params)
     resp = responses[0]
     hourly = resp.Hourly()
 

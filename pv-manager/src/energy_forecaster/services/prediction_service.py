@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 from joblib import load
+from xgboost import XGBRegressor
 
 from energy_forecaster.io.home_assistant import HomeAssistant
 from energy_forecaster.io.open_meteo import fetch_openmeteo_forecast
@@ -79,9 +80,19 @@ def _dump_debug_frame(debug_path: Optional[Path], name: str, frame: Optional[pd.
 
 def load_models(models_dir: str) -> Tuple[object, object]:
     house_path = os.path.join(models_dir, "house_consumption.joblib")
-    pv_path = os.path.join(models_dir, "pv_power.joblib")
+    pv_path_json = os.path.join(models_dir, "pv_power.json")
+    pv_path_joblib = os.path.join(models_dir, "pv_power.joblib")
+
     house_model = load(house_path)
-    pv_model = load(pv_path)
+    
+    if os.path.exists(pv_path_json):
+        pv_model = XGBRegressor()
+        pv_model.load_model(pv_path_json)
+    elif os.path.exists(pv_path_joblib):
+        pv_model = load(pv_path_joblib)
+    else:
+        raise FileNotFoundError(f"PV model not found in {models_dir}")
+        
     return house_model, pv_model
 
 
@@ -178,8 +189,8 @@ def run_prediction_pipeline(
             "Retrain models to pick up the latest weather inputs."
         )
 
-    pv_X_aligned = _align_features(pv_model, pv_X, "PV")
-    pv_pred_values = pv_model.predict(pv_X_aligned.values)
+    pv_X_aligned = _align_features(pv_model, pv_X, "PV").astype(float)
+    pv_pred_values = pv_model.predict(pv_X_aligned)
     timings["pv_predict"] = time.perf_counter() - t0
     pv_pred = pd.DataFrame({PV_COL: pv_pred_values}, index=pv_X.index)
     pv_pred[PV_COL] = pv_pred[PV_COL].clip(lower=0.0)
@@ -201,7 +212,7 @@ def run_prediction_pipeline(
 
     # Restrict to rows where lags are available
     house_X_clean = house_X.dropna()
-    house_X_aligned = _align_features(house_model, house_X_clean, "House consumption")
+    house_X_aligned = _align_features(house_model, house_X_clean, "House consumption").astype(float)
     _dump_debug_frame(debug_path, "house_features_clean", house_X_clean)
     expected_house_features = getattr(house_model, "n_features_in_", house_X_aligned.shape[1])
     if house_X_aligned.shape[1] != expected_house_features:
@@ -227,7 +238,7 @@ def run_prediction_pipeline(
         }
 
     t0 = time.perf_counter()
-    house_pred_values = house_model.predict(house_X_aligned.values)
+    house_pred_values = house_model.predict(house_X_aligned)
     timings["house_predict"] = time.perf_counter() - t0
     house_pred = pd.DataFrame({TARGET_COL: house_pred_values}, index=house_pred_idx)
     house_pred[TARGET_COL] = house_pred[TARGET_COL].clip(lower=0.0)

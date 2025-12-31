@@ -795,7 +795,10 @@ class HomeAssistant:
 
         def _run_loop(loop: asyncio.AbstractEventLoop):
             asyncio.set_event_loop(loop)
-            loop.run_forever()
+            try:
+                loop.run_forever()
+            finally:
+                loop.close()
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=_run_loop, args=(self._loop,), daemon=True)

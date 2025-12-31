@@ -44,7 +44,7 @@ def _load_inverter_config():
     except Exception as exc:
         logger.warning("[TRAIN] Failed to load settings.json; falling back to defaults: %s", exc)
         return None, None, None
-    inverter = settings.inverter
+    inverter = settings.ha_entities
     return list(inverter.stat_ids()), dict(inverter.rename_map()), dict(inverter.scales())
 
 def main():
@@ -61,7 +61,7 @@ def main():
         url = None   # Will use default supervisor URL
     
     # Initialize Home Assistant client
-    ha = HomeAssistant(token=token, ws_url=url)
+    ha = HomeAssistant(token=token, instance_url=url)
     stat_ids, rename_map, scales = _load_inverter_config()
     active_entities = stat_ids or DEFAULT_ENTITIES
     

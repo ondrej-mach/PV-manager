@@ -121,32 +121,32 @@ def run_training_pipeline(
 
     # Fit house model
     house_feature_cols = list(df_house.drop(columns=[TARGET_COL]).columns)
-    Xh = df_house[house_feature_cols].values
-    yh = df_house[TARGET_COL].values
+    Xh = df_house[house_feature_cols]
+    yh = df_house[TARGET_COL]
     logger.info("[TRAIN] Training house model: samples=%s features=%s", len(yh), Xh.shape[1])
     t0 = time.perf_counter()
     house_model.fit(Xh, yh)
     t1 = time.perf_counter()
     logger.info("[TRAIN] House model trained in %.1fs", t1 - t0)
-    _set_feature_metadata(house_model, house_feature_cols)
+    # _set_feature_metadata(house_model, house_feature_cols)
 
     # Fit pv model
     pv_feature_cols = list(df_pv.drop(columns=[PV_COL]).columns)
-    Xp = df_pv[pv_feature_cols].values
-    yp = df_pv[PV_COL].values
+    Xp = df_pv[pv_feature_cols]
+    yp = df_pv[PV_COL]
     logger.info("[TRAIN] Training PV model: samples=%s features=%s", len(yp), Xp.shape[1])
     t0 = time.perf_counter()
     pv_model.fit(Xp, yp)
     t1 = time.perf_counter()
     logger.info("[TRAIN] PV model trained in %.1fs", t1 - t0)
-    _set_feature_metadata(pv_model, pv_feature_cols)
+    # _set_feature_metadata(pv_model, pv_feature_cols)
 
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
         house_path = os.path.join(save_dir, "house_consumption.joblib")
-        pv_path = os.path.join(save_dir, "pv_power.joblib")
+        pv_path = os.path.join(save_dir, "pv_power.json")
         dump(house_model, house_path)
-        dump(pv_model, pv_path)
+        pv_model.save_model(pv_path)
     logger.info("[TRAIN] Models saved: %s, %s", house_path, pv_path)
 
     return {
