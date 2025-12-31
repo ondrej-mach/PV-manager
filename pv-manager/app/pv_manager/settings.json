@@ -11,13 +11,13 @@
     "export_power_limited": false,
     "driver_id": "goodwe",
     "driver_config": {
-      "max_power_kw": 9.6
+      "max_power_kw": 10.0
     },
     "entity_map": {
-      "operation_mode": "select.goodwe_inverter_operation_mode",
-      "eco_mode_power": "number.goodwe_eco_mode_power",
-      "eco_mode_soc": "number.goodwe_eco_mode_soc",
-      "active_power": "sensor.active_power"
+      "operation_mode": "select.goodwe_mode",
+      "eco_mode_power": "number.goodwe_power",
+      "eco_mode_soc": "number.goodwe_soc",
+      "active_power": "sensor.goodwe_active_power"
     },
     "soc_sensor": {
       "entity_id": "sensor.battery_state_of_charge",

@@ -9,10 +9,11 @@ import numpy as np
 from datetime import datetime, timezone
 
 # Add app directory to path
-sys.path.insert(0, str(Path(__file__).resolve().parent / "app"))
+# Add app directory to path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
 
 from pv_manager.state import AppContext
-from pv_manager.settings import AppSettings, InverterSettings, EntitySelection
+from pv_manager.settings import AppSettings, EntitySelection
 
 def test_cycle():
     print("Initializing AppContext...")

@@ -19,19 +19,31 @@ def wait_for_server():
             time.sleep(1)
     return False
 
+
+from pathlib import Path
+
 def test_api():
+    # Determine paths based on this script's location
+    # script is in pv-manager/tests/test_api.py
+    # we want pv-manager/app/main.py
+    tests_dir = Path(__file__).resolve().parent
+    repo_dir = tests_dir.parent
+    app_dir = repo_dir / "app"
+    main_py = app_dir / "main.py"
+
     # Start server
     env = os.environ.copy()
     # Add app directory to PYTHONPATH so pv_manager package can be found
-    env["PYTHONPATH"] = os.path.join(os.getcwd(), "app") + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(app_dir) + os.pathsep + env.get("PYTHONPATH", "")
     
     print("Starting server...")
     proc = subprocess.Popen(
-        [sys.executable, "app/main.py"], 
+        [sys.executable, str(main_py)], 
         env=env, 
         stdout=subprocess.PIPE, 
         stderr=subprocess.PIPE
     )
+    
     
     try:
         if not wait_for_server():

@@ -15,3 +15,5 @@ output/
 recorder_list.out
 *.csv
 
+control_state.json
+
