@@ -6,7 +6,7 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PV Manager</title>
-    <link rel="stylesheet" href="static/app.css?v=0.2.4" />
+    <link rel="stylesheet" href="static/app.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" defer></script>
 </head>
 
@@ -58,7 +58,7 @@
                 <div id="cycleMessage" class="message" style="display:none;"></div>
                 <div class="actions">
                     <button type="button" id="cycleBtn">Recompute Plan</button>
-                    <button type="button" id="trainBtn">Trigger Training</button>
+                    <button type="button" id="trainBtn">Train predictors</button>
                 </div>
             </section>
 
@@ -75,7 +75,7 @@
                 <h2>Optimization Plan</h2>
                 <div class="optimization-charts">
                     <div class="optimization-block">
-                        <h3 class="chart-subtitle">Price &amp; battery state</h3>
+                        <h3 class="chart-subtitle">Price and Battery SoC</h3>
                         <div class="chart-container chart-plan">
                             <canvas id="planChart" height="320"></canvas>
                         </div>
@@ -94,7 +94,7 @@
             <section class="card">
                 <h2>Settings</h2>
                 <nav class="settings-nav">
-                    <button type="button" data-settings-tab="control" class="active">HA Entities</button>
+                    <button type="button" data-settings-tab="control" class="active">Inverter</button>
                     <button type="button" data-settings-tab="battery">Battery</button>
                     <button type="button" data-settings-tab="prices">Grid</button>
                     <button type="button" data-settings-tab="loads">Flexible Loads</button>
@@ -102,7 +102,7 @@
                 </nav>
                 <div class="settings-content">
                     <div data-settings-panel="control" class="settings-panel active">
-                        <h3>HA Entities</h3>
+                        <h3>Inverter Control</h3>
                         <p class="message">Configure Home Assistant entities and the inverter driver.</p>
                         <form id="controlForm" class="settings-form" autocomplete="off">
                             <div class="field">
@@ -121,202 +121,197 @@
                                     the array&apos;s potential once batteries are full.</p>
                             </div>
                             <p class="message" id="controlMessage" style="display:none;"></p>
-                            <div class="actions">
-                                <button type="button" id="saveControlBtn" class="primary">Save Configuration</button>
-                            </div>
-                        </form>
                     </div>
-                    <div data-settings-panel="battery" class="settings-panel">
-                        <h3>Battery Settings</h3>
-                        <p class="message">Set how much each kWh of battery throughput should cost to reflect wear.</p>
-                        <form id="batteryForm" class="settings-form" autocomplete="off">
+                    </form>
+                </div>
+                <div data-settings-panel="battery" class="settings-panel">
+                    <h3>Battery Settings</h3>
+                    <p class="message">Set how much each kWh of battery throughput should cost to reflect wear.</p>
+                    <form id="batteryForm" class="settings-form" autocomplete="off">
+                        <div class="field">
+                            <label for="batteryCapacityInput">Usable capacity (kWh)</label>
+                            <input type="number" id="batteryCapacityInput" min="0.1" step="0.1" inputmode="decimal"
+                                aria-describedby="batteryCapacityHint" />
+                            <p class="hint" id="batteryCapacityHint">Defines how much energy the optimization can
+                                store in the battery.</p>
+                        </div>
+                        <div class="field">
+                            <label for="batteryPowerInput">Charge / discharge limit (kW)</label>
+                            <input type="number" id="batteryPowerInput" min="0.1" step="0.1" inputmode="decimal"
+                                aria-describedby="batteryPowerHint" />
+                            <p class="hint" id="batteryPowerHint">Set to the inverter&apos;s continuous charge or
+                                discharge power limit.</p>
+                        </div>
+                        <div class="field">
+                            <label for="batterySocMinInput">Reserve floor (% SoC)</label>
+                            <input type="number" id="batterySocMinInput" min="0" max="98" step="1" inputmode="decimal"
+                                aria-describedby="batterySocMinHint" />
+                            <p class="hint" id="batterySocMinHint">Keep at least this much charge reserved for
+                                resiliency.</p>
+                        </div>
+                        <div class="field">
+                            <label for="batterySocMaxInput">Maximum usable SoC (%)</label>
+                            <input type="number" id="batterySocMaxInput" min="2" max="100" step="1" inputmode="decimal"
+                                aria-describedby="batterySocMaxHint" />
+                            <p class="hint" id="batterySocMaxHint">Upper bound on usable charge to limit battery
+                                wear.</p>
+                        </div>
+                        <div class="field">
+                            <label for="batteryWearInput">Battery wear cost (€/kWh)</label>
+                            <input type="number" id="batteryWearInput" min="0" step="0.01" inputmode="decimal"
+                                aria-describedby="batteryWearHint" />
+                            <p class="hint" id="batteryWearHint">Applied as a throughput penalty in the optimization
+                                to limit excessive cycling.</p>
+                        </div>
+                        <p class="message" id="batteryMessage" style="display:none;"></p>
+                    </form>
+                </div>
+                <div data-settings-panel="prices" class="settings-panel">
+                    <h3>Grid Settings</h3>
+                    <p class="message">Connect to tariff providers or override price profiles for optimization.</p>
+                    <form id="pricingForm" class="settings-form" autocomplete="off">
+                        <fieldset class="tariff-group">
+                            <legend>Grid import</legend>
                             <div class="field">
-                                <label for="batteryCapacityInput">Usable capacity (kWh)</label>
-                                <input type="number" id="batteryCapacityInput" min="0.1" step="0.1" inputmode="decimal"
-                                    aria-describedby="batteryCapacityHint" />
-                                <p class="hint" id="batteryCapacityHint">Defines how much energy the optimization can
-                                    store in the battery.</p>
+                                <label for="importTariffMode">Mode</label>
+                                <select id="importTariffMode" aria-describedby="importTariffHint">
+                                    <option value="constant">Constant price</option>
+                                    <option value="spot_plus_constant">Spot price with offset</option>
+                                    <option value="dual_rate">Dual-rate schedule</option>
+                                </select>
+                                <p class="hint" id="importTariffHint">Apply a single fixed rate to every interval.
+                                </p>
                             </div>
-                            <div class="field">
-                                <label for="batteryPowerInput">Charge / discharge limit (kW)</label>
-                                <input type="number" id="batteryPowerInput" min="0.1" step="0.1" inputmode="decimal"
-                                    aria-describedby="batteryPowerHint" />
-                                <p class="hint" id="batteryPowerHint">Set to the inverter&apos;s continuous charge or
-                                    discharge power limit.</p>
+                            <div class="field" id="importConstantField" data-tariff-scope="import"
+                                data-tariff-mode="constant" style="display:none;">
+                                <label for="importConstantPrice">Import price (€/kWh)</label>
+                                <input type="number" id="importConstantPrice" min="0" step="0.001"
+                                    inputmode="decimal" />
+                                <p class="hint">Used for every interval when constant pricing is selected.</p>
                             </div>
-                            <div class="field">
-                                <label for="batterySocMinInput">Reserve floor (% SoC)</label>
-                                <input type="number" id="batterySocMinInput" min="0" max="98" step="1"
-                                    inputmode="decimal" aria-describedby="batterySocMinHint" />
-                                <p class="hint" id="batterySocMinHint">Keep at least this much charge reserved for
-                                    resiliency.</p>
+                            <div class="field" id="importSpotOffsetField" data-tariff-scope="import"
+                                data-tariff-mode="spot_plus_constant" style="display:none;">
+                                <label for="importSpotOffset">Offset from spot price (€/kWh)</label>
+                                <input type="number" id="importSpotOffset" step="0.001" inputmode="decimal" />
+                                <p class="hint">Positive values raise import prices; negative values lower them
+                                    relative to the spot signal.</p>
                             </div>
-                            <div class="field">
-                                <label for="batterySocMaxInput">Maximum usable SoC (%)</label>
-                                <input type="number" id="batterySocMaxInput" min="2" max="100" step="1"
-                                    inputmode="decimal" aria-describedby="batterySocMaxHint" />
-                                <p class="hint" id="batterySocMaxHint">Upper bound on usable charge to limit battery
-                                    wear.</p>
+                            <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
+                                style="display:none;">
+                                <label for="importPeakRate">Peak price (€/kWh)</label>
+                                <input type="number" id="importPeakRate" min="0" step="0.001" inputmode="decimal" />
                             </div>
-                            <div class="field">
-                                <label for="batteryWearInput">Battery wear cost (€/kWh)</label>
-                                <input type="number" id="batteryWearInput" min="0" step="0.01" inputmode="decimal"
-                                    aria-describedby="batteryWearHint" />
-                                <p class="hint" id="batteryWearHint">Applied as a throughput penalty in the optimization
-                                    to limit excessive cycling.</p>
+                            <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
+                                style="display:none;">
+                                <label for="importOffpeakRate">Off-peak price (€/kWh)</label>
+                                <input type="number" id="importOffpeakRate" min="0" step="0.001" inputmode="decimal" />
                             </div>
-                            <p class="message" id="batteryMessage" style="display:none;"></p>
-                        </form>
-                    </div>
-                    <div data-settings-panel="prices" class="settings-panel">
-                        <h3>Grid Settings</h3>
-                        <p class="message">Connect to tariff providers or override price profiles for optimization.</p>
-                        <form id="pricingForm" class="settings-form" autocomplete="off">
-                            <fieldset class="tariff-group">
-                                <legend>Grid import</legend>
+                            <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
+                                style="display:none;">
+                                <label for="importPeakStart">Peak start (local time)</label>
+                                <input type="text" id="importPeakStart" inputmode="numeric"
+                                    pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="07:00" />
+                            </div>
+                            <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
+                                style="display:none;">
+                                <label for="importPeakEnd">Peak end (local time)</label>
+                                <input type="text" id="importPeakEnd" inputmode="numeric"
+                                    pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
+                                <p class="hint">Intervals between start and end use the peak rate; others use the
+                                    off-peak rate.</p>
+                            </div>
+                        </fieldset>
+                        <fieldset class="tariff-group">
+                            <legend>Grid export</legend>
+                            <div class="field checkbox-field">
+                                <label class="checkbox" for="exportEnabledToggle">
+                                    <input type="checkbox" id="exportEnabledToggle" />
+                                    <span>Enable Export</span>
+                                </label>
+                            </div>
+                            <div id="exportSettingsContainer">
                                 <div class="field">
-                                    <label for="importTariffMode">Mode</label>
-                                    <select id="importTariffMode" aria-describedby="importTariffHint">
+                                    <label for="exportPowerLimit">Export Power Limit (kW)</label>
+                                    <input type="number" id="exportPowerLimit" min="0" step="0.1" inputmode="decimal" />
+                                    <p class="hint">Maximum power allowed to be exported to the grid. Leave empty
+                                        for no limit.</p>
+                                </div>
+                                <div class="field">
+                                    <label for="exportTariffMode">Mode</label>
+                                    <select id="exportTariffMode" aria-describedby="exportTariffHint">
                                         <option value="constant">Constant price</option>
                                         <option value="spot_plus_constant">Spot price with offset</option>
                                         <option value="dual_rate">Dual-rate schedule</option>
                                     </select>
-                                    <p class="hint" id="importTariffHint">Apply a single fixed rate to every interval.
+                                    <p class="hint" id="exportTariffHint">Apply a single fixed rate to every
+                                        interval.
                                     </p>
                                 </div>
-                                <div class="field" id="importConstantField" data-tariff-scope="import"
+                                <div class="field" id="exportConstantField" data-tariff-scope="export"
                                     data-tariff-mode="constant" style="display:none;">
-                                    <label for="importConstantPrice">Import price (€/kWh)</label>
-                                    <input type="number" id="importConstantPrice" min="0" step="0.001"
+                                    <label for="exportConstantPrice">Export price (€/kWh)</label>
+                                    <input type="number" id="exportConstantPrice" min="0" step="0.001"
                                         inputmode="decimal" />
                                     <p class="hint">Used for every interval when constant pricing is selected.</p>
                                 </div>
-                                <div class="field" id="importSpotOffsetField" data-tariff-scope="import"
+                                <div class="field" id="exportSpotOffsetField" data-tariff-scope="export"
                                     data-tariff-mode="spot_plus_constant" style="display:none;">
-                                    <label for="importSpotOffset">Offset from spot price (€/kWh)</label>
-                                    <input type="number" id="importSpotOffset" step="0.001" inputmode="decimal" />
-                                    <p class="hint">Positive values raise import prices; negative values lower them
-                                        relative to the spot signal.</p>
+                                    <label for="exportSpotOffset">Offset from spot price (€/kWh)</label>
+                                    <input type="number" id="exportSpotOffset" step="0.001" inputmode="decimal" />
+                                    <p class="hint">Positive values raise export revenue; negative values lower it
+                                        relative to the spot tariff.</p>
                                 </div>
-                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
+                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
                                     style="display:none;">
-                                    <label for="importPeakRate">Peak price (€/kWh)</label>
-                                    <input type="number" id="importPeakRate" min="0" step="0.001" inputmode="decimal" />
+                                    <label for="exportPeakRate">Peak price (€/kWh)</label>
+                                    <input type="number" id="exportPeakRate" min="0" step="0.001" inputmode="decimal" />
                                 </div>
-                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
+                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
                                     style="display:none;">
-                                    <label for="importOffpeakRate">Off-peak price (€/kWh)</label>
-                                    <input type="number" id="importOffpeakRate" min="0" step="0.001"
+                                    <label for="exportOffpeakRate">Off-peak price (€/kWh)</label>
+                                    <input type="number" id="exportOffpeakRate" min="0" step="0.001"
                                         inputmode="decimal" />
                                 </div>
-                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
+                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
                                     style="display:none;">
-                                    <label for="importPeakStart">Peak start (local time)</label>
-                                    <input type="text" id="importPeakStart" inputmode="numeric"
+                                    <label for="exportPeakStart">Peak start (local time)</label>
+                                    <input type="text" id="exportPeakStart" inputmode="numeric"
                                         pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="07:00" />
                                 </div>
-                                <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
+                                <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
                                     style="display:none;">
-                                    <label for="importPeakEnd">Peak end (local time)</label>
-                                    <input type="text" id="importPeakEnd" inputmode="numeric"
+                                    <label for="exportPeakEnd">Peak end (local time)</label>
+                                    <input type="text" id="exportPeakEnd" inputmode="numeric"
                                         pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
-                                    <p class="hint">Intervals between start and end use the peak rate; others use the
+                                    <p class="hint">Intervals between start and end use the peak rate; others use
+                                        the
                                         off-peak rate.</p>
                                 </div>
-                            </fieldset>
-                            <fieldset class="tariff-group">
-                                <legend>Grid export</legend>
-                                <div class="field checkbox-field">
-                                    <label class="checkbox" for="exportEnabledToggle">
-                                        <input type="checkbox" id="exportEnabledToggle" />
-                                        <span>Enable Export</span>
-                                    </label>
-                                </div>
-                                <div id="exportSettingsContainer">
-                                    <div class="field">
-                                        <label for="exportPowerLimit">Export Power Limit (kW)</label>
-                                        <input type="number" id="exportPowerLimit" min="0" step="0.1"
-                                            inputmode="decimal" />
-                                        <p class="hint">Maximum power allowed to be exported to the grid. Leave empty
-                                            for no limit.</p>
-                                    </div>
-                                    <div class="field">
-                                        <label for="exportTariffMode">Mode</label>
-                                        <select id="exportTariffMode" aria-describedby="exportTariffHint">
-                                            <option value="constant">Constant price</option>
-                                            <option value="spot_plus_constant">Spot price with offset</option>
-                                            <option value="dual_rate">Dual-rate schedule</option>
-                                        </select>
-                                        <p class="hint" id="exportTariffHint">Apply a single fixed rate to every
-                                            interval.
-                                        </p>
-                                    </div>
-                                    <div class="field" id="exportConstantField" data-tariff-scope="export"
-                                        data-tariff-mode="constant" style="display:none;">
-                                        <label for="exportConstantPrice">Export price (€/kWh)</label>
-                                        <input type="number" id="exportConstantPrice" min="0" step="0.001"
-                                            inputmode="decimal" />
-                                        <p class="hint">Used for every interval when constant pricing is selected.</p>
-                                    </div>
-                                    <div class="field" id="exportSpotOffsetField" data-tariff-scope="export"
-                                        data-tariff-mode="spot_plus_constant" style="display:none;">
-                                        <label for="exportSpotOffset">Offset from spot price (€/kWh)</label>
-                                        <input type="number" id="exportSpotOffset" step="0.001" inputmode="decimal" />
-                                        <p class="hint">Positive values raise export revenue; negative values lower it
-                                            relative to the spot tariff.</p>
-                                    </div>
-                                    <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
-                                        style="display:none;">
-                                        <label for="exportPeakRate">Peak price (€/kWh)</label>
-                                        <input type="number" id="exportPeakRate" min="0" step="0.001"
-                                            inputmode="decimal" />
-                                    </div>
-                                    <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
-                                        style="display:none;">
-                                        <label for="exportOffpeakRate">Off-peak price (€/kWh)</label>
-                                        <input type="number" id="exportOffpeakRate" min="0" step="0.001"
-                                            inputmode="decimal" />
-                                    </div>
-                                    <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
-                                        style="display:none;">
-                                        <label for="exportPeakStart">Peak start (local time)</label>
-                                        <input type="text" id="exportPeakStart" inputmode="numeric"
-                                            pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="07:00" />
-                                    </div>
-                                    <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
-                                        style="display:none;">
-                                        <label for="exportPeakEnd">Peak end (local time)</label>
-                                        <input type="text" id="exportPeakEnd" inputmode="numeric"
-                                            pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
-                                        <p class="hint">Intervals between start and end use the peak rate; others use
-                                            the
-                                            off-peak rate.</p>
-                                    </div>
-                                </div>
-                            </fieldset>
-                            <p class="message" id="pricingMessage" style="display:none;"></p>
-                        </form>
-                    </div>
-                    <div data-settings-panel="loads" class="settings-panel">
-                        <h3>Flexible Loads</h3>
-                        <p class="message">Schedule controllable appliances and flexibility windows for automation.</p>
-                    </div>
-                    <div data-settings-panel="training" class="settings-panel">
-                        <h3>Model Training</h3>
-                        <p class="message">Configure automated model retraining.</p>
-                        <form id="trainingForm" class="settings-form" autocomplete="off">
-                            <div class="field checkbox-field">
-                                <label class="checkbox" for="autoTrainingToggle">
-                                    <input type="checkbox" id="autoTrainingToggle" />
-                                    <span>Enable automatic nightly training (02:00 UTC)</span>
-                                </label>
-                                <p class="hint">Automatically retrain models every night to adapt to changing
-                                    conditions.</p>
                             </div>
-                        </form>
-                    </div>
+                        </fieldset>
+                        <p class="message" id="pricingMessage" style="display:none;"></p>
+                    </form>
                 </div>
-            </section>
+                <div data-settings-panel="loads" class="settings-panel">
+                    <h3>Flexible Loads</h3>
+                    <p class="message">Schedule controllable appliances and flexibility windows for automation.</p>
+                </div>
+                <div data-settings-panel="training" class="settings-panel">
+                    <h3>Model Training</h3>
+                    <p class="message">Configure automated model retraining.</p>
+                    <form id="trainingForm" class="settings-form" autocomplete="off">
+                        <div class="field checkbox-field">
+                            <label class="checkbox" for="autoTrainingToggle">
+                                <input type="checkbox" id="autoTrainingToggle" />
+                                <span>Enable automatic nightly training (02:00 UTC)</span>
+                            </label>
+                            <p class="hint">Automatically retrain models every night to adapt to changing
+                                conditions.</p>
+                        </div>
+                    </form>
+                </div>
+        </div>
+        </section>
         </div>
     </main>
     <div id="entityModal" class="entity-modal" role="dialog" aria-modal="true" aria-labelledby="entityModalTitle">
@@ -336,7 +331,7 @@
             </div>
         </div>
     </div>
-    <script src="static/app.js?v=0.2.4" defer></script>
+    <script src="static/app.js" defer></script>
 
 </body>
 

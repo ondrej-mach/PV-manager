@@ -26,7 +26,15 @@ let lastEntityTrigger = null;
 let lastTrainingRunning = false;
 let lastCycleRunning = false;
 let autoRefreshTimer = null;
+let controlSaveTimer = null;
+
+function scheduleControlSave() {
+    if (controlSaveTimer) clearTimeout(controlSaveTimer);
+    setHAEntitiesMessage('Saving changes...', 'pending');
+    controlSaveTimer = setTimeout(saveControlSettings, 1000);
+}
 let pendingForecastRefresh = null;
+let lastForecastTimestamp = null; // optimizations: only fetch forecast when changed
 let refreshAllPromise = null;
 const TARIFF_MODES = ['constant', 'spot_plus_constant', 'dual_rate'];
 const houseTrigger = document.getElementById('houseEntityTrigger');
@@ -1056,7 +1064,8 @@ async function loadSettingsData() {
 
         const autoTrainingToggle = document.getElementById('autoTrainingToggle');
         if (autoTrainingToggle) {
-            autoTrainingToggle.checked = Boolean(payload.auto_training_enabled);
+            const enabled = payload.settings ? payload.settings.auto_training_enabled : false;
+            autoTrainingToggle.checked = Boolean(enabled);
         }
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1456,17 +1465,21 @@ function applyStatus(payload) {
     const trainingStateEl = document.getElementById('trainingState');
     const trainingErrorEl = document.getElementById('trainingError');
     const trainBtn = document.getElementById('trainBtn');
+
+    // Fallback if payload missing (e.g. partial update)
     const haError = payload.home_assistant_error || null;
     const cycleBtn = document.getElementById('cycleBtn');
     const cycleMessageEl = document.getElementById('cycleMessage');
     const summaryWindowEl = document.getElementById('summaryWindow');
 
     const controlSwitch = document.getElementById('controlSwitch');
+
+    // Check if driver is configured
+    // payload.driver_configured might be undefined in older backends, assume true if so to avoid breaking validation
+    const hasDriver = payload.driver_configured !== false;
+
     if (controlSwitch) {
         controlSwitch.setAttribute('aria-checked', String(Boolean(payload.control_active)));
-
-        // Check if driver is configured
-        const hasDriver = payload.driver_configured !== false; // Default to true if not provided
 
         if (haError) {
             controlSwitch.setAttribute('disabled', 'disabled');
@@ -1483,114 +1496,100 @@ function applyStatus(payload) {
     if (!haError && payload.snapshot_available) {
         // Status OK
     } else if (!haError) {
-        if (summaryWindowEl) {
-            summaryWindowEl.textContent = '';
-        }
+        if (summaryWindowEl) summaryWindowEl.textContent = '';
         if (payload.last_cycle_error) {
             renderIntervention(null, `Forecast error: ${payload.last_cycle_error}`);
         } else {
             renderIntervention(null, 'Current intervention: Not available');
         }
     } else {
-        if (summaryWindowEl) {
-            summaryWindowEl.textContent = '';
-        }
+        if (summaryWindowEl) summaryWindowEl.textContent = '';
         renderIntervention(null, 'Current intervention unavailable until Home Assistant connects');
     }
 
+    // --- Error Reporting ---
     const errorMessages = [];
-    if (haError) {
-        errorMessages.push(haError);
-    }
-    errorEl.textContent = errorMessages.join(' ');
+    if (haError) errorMessages.push(`Home Assistant error: ${haError}`);
+    if (!hasDriver) errorMessages.push("Inverter not configured. Please go to Settings > Inverter Control.");
 
+    // Training status
     const training = payload.training || {};
-    if (training.running) {
-        trainingStateEl.textContent = training.started_at
-            ? `Training in progress (started ${formatDateTime(training.started_at)})`
-            : 'Training in progress…';
-        trainingStateEl.classList.add('running');
-        trainBtn.textContent = 'Training…';
-        trainBtn.disabled = true;
-    } else if (haError) {
-        trainingStateEl.textContent = 'Training unavailable until Home Assistant connects';
-        trainingStateEl.classList.remove('running');
-        trainBtn.textContent = 'Trigger Training';
-        trainBtn.disabled = true;
+    const trainingRunning = Boolean(training.running);
+    const cycleRunning = Boolean(payload.cycle_running);
+
+    if (training.error) errorMessages.push(`Training failed: ${training.error}`);
+    if (payload.last_cycle_error) errorMessages.push(`Optimization cycle failed: ${payload.last_cycle_error}`);
+
+    // Update main error element
+    if (errorMessages.length > 0) {
+        // Join with <br> for readability
+        errorEl.innerHTML = errorMessages.join('<br>');
+        errorEl.style.display = 'block';
     } else {
-        trainingStateEl.textContent = training.finished_at
-            ? `Last trained ${formatDateTime(training.finished_at)}`
-            : 'Training idle';
-        trainingStateEl.classList.remove('running');
-        trainBtn.textContent = 'Trigger Training';
-        trainBtn.disabled = false;
+        errorEl.textContent = '';
+        errorEl.style.display = 'none';
     }
 
-    if (training.error) {
-        trainingErrorEl.style.display = 'block';
-        trainingErrorEl.textContent = `Last training error: ${training.error}`;
-    } else {
-        trainingErrorEl.style.display = 'none';
-        trainingErrorEl.textContent = '';
-    }
+    // --- Button States & Labels ---
 
-    if (cycleMessageEl) {
-        if (payload.cycle_running) {
-            cycleMessageEl.style.display = 'block';
-            cycleMessageEl.classList.remove('error');
-            cycleMessageEl.textContent = 'Optimization cycle running…';
-            cycleMessageEl.dataset.auto = 'running';
-        } else if (cycleMessageEl.dataset.auto === 'running') {
-            cycleMessageEl.style.display = 'none';
-            cycleMessageEl.textContent = '';
-            delete cycleMessageEl.dataset.auto;
-        }
-    }
+    // Default labels
+    const trainLabel = 'Train predictors';
+    const cycleLabel = 'Recompute Plan';
 
-    if (cycleBtn) {
-        if (haError) {
+    // Verify buttons exist
+    if (trainBtn && cycleBtn) {
+        // 1. Critical blocks
+        if (haError || !hasDriver) {
+            trainBtn.disabled = true;
             cycleBtn.disabled = true;
-            cycleBtn.textContent = 'Recompute Plan';
-        } else if (payload.cycle_running) {
-            cycleBtn.disabled = true;
-            cycleBtn.textContent = 'Recomputing…';
+            trainBtn.textContent = trainLabel;
+            cycleBtn.textContent = cycleLabel;
+
+            trainingStateEl.textContent = haError ? 'System unavailable' : 'Inverter not configured';
+            trainingStateEl.classList.remove('running');
         } else {
-            cycleBtn.disabled = false;
-            cycleBtn.textContent = 'Recompute Plan';
+            // Clear status text if no critical error (User requested "Display only if critical")
+            trainingStateEl.textContent = '';
+            trainingStateEl.classList.remove('running');
+
+            // 2. Running states handling (Mutual Exclusion)
+            if (trainingRunning) {
+                // Training is active
+                trainBtn.disabled = true;
+                trainBtn.textContent = 'Training…';
+
+                cycleBtn.disabled = true; // Gray out other button
+                cycleBtn.textContent = cycleLabel;
+            } else if (cycleRunning) {
+                // Cycle is active
+                cycleBtn.disabled = true;
+                cycleBtn.textContent = 'Recomputing…';
+
+                trainBtn.disabled = true; // Gray out other button
+                trainBtn.textContent = trainLabel;
+            } else {
+                // Idle
+                trainBtn.disabled = false;
+                trainBtn.textContent = trainLabel;
+
+                cycleBtn.disabled = false;
+                cycleBtn.textContent = cycleLabel;
+            }
         }
+    }
+
+    // Hide legacy error boxes if we are using the main one
+    if (trainingErrorEl) trainingErrorEl.style.display = 'none';
+
+    // Remove "Optimization cycle running..." message (User requested removal)
+    if (cycleMessageEl) {
+        cycleMessageEl.style.display = 'none';
+        delete cycleMessageEl.dataset.auto;
     }
 
     updateSummary(payload.summary);
 
-    const trainingRunning = Boolean(training.running);
-    const cycleRunningState = Boolean(payload.cycle_running);
-    const trainingCompleted = lastTrainingRunning && !trainingRunning;
-    const cycleCompleted = lastCycleRunning && !cycleRunningState;
-
-    lastTrainingRunning = trainingRunning;
-    lastCycleRunning = cycleRunningState;
-
-    if (autoRefreshTimer) {
-        clearTimeout(autoRefreshTimer);
-        autoRefreshTimer = null;
-    }
-    if (!showingSettings && (trainingRunning || cycleRunningState)) {
-        autoRefreshTimer = window.setTimeout(() => {
-            autoRefreshTimer = null;
-            refreshStatus();
-        }, 15000);
-    }
-
-    const shouldRefreshForecast = !showingSettings && (trainingCompleted || cycleCompleted);
-    if (shouldRefreshForecast) {
-        if (pendingForecastRefresh) {
-            clearTimeout(pendingForecastRefresh);
-        }
-        pendingForecastRefresh = window.setTimeout(() => {
-            pendingForecastRefresh = null;
-            refreshForecast();
-        }, 1200);
-    }
+    // Redundant refresh logic removed (global 1s interval handles real-time updates)
 }
 
 function ensureForecastChart() {
@@ -1779,8 +1778,12 @@ function ensureGridChart() {
             responsive: true,
             maintainAspectRatio: false,
             scales: {
-                x: { ticks: { maxRotation: 0, autoSkip: true } },
+                x: {
+                    ticks: { maxRotation: 0, autoSkip: true },
+                    stacked: true, // Stack columns to maximize width (user requested overlap/full width)
+                },
                 y: {
+                    stacked: true,
                     title: { display: true, text: 'Grid power (kW)' },
                     ticks: {
                         callback(value) {
@@ -1795,6 +1798,21 @@ function ensureGridChart() {
                             return 'rgba(148, 163, 184, 0.18)';
                         },
                     },
+                },
+                yRight: {
+                    position: 'right', // Align with the Price axis of the chart above
+                    display: true,
+                    grid: { drawOnChartArea: false },
+                    title: {
+                        display: true,
+                        text: 'Price (€/kWh)', // Same text length as upper chart 
+                        color: 'transparent' // Invisible
+                    },
+                    ticks: {
+                        display: true,
+                        color: 'transparent',
+                        callback: function () { return ' .00 '; } // Approximate tick width
+                    }
                 },
             },
             plugins: {
@@ -1899,14 +1917,7 @@ function applyForecast(payload) {
 
     const summaryWindowEl = document.getElementById('summaryWindow');
     if (summaryWindowEl) {
-        const windowInfo = payload.summary_window || {};
-        if (windowInfo.start && windowInfo.end) {
-            const startText = formatDateTime(windowInfo.start);
-            const endText = formatDateTime(windowInfo.end);
-            summaryWindowEl.textContent = `Forecast horizon: ${startText} → ${endText}`;
-        } else {
-            summaryWindowEl.textContent = '';
-        }
+        summaryWindowEl.textContent = ''; // Removed horizon text per user request
     }
 
     renderIntervention(payload.intervention || null);
@@ -1916,13 +1927,17 @@ async function refreshStatus() {
     try {
         const payload = await fetchJson('api/status');
         applyStatus(payload);
+        return payload; // Return payload for upstream logic
     } catch (err) {
         const dot = document.querySelector('#status .dot');
         const label = document.getElementById('statusLabel');
-        const errorEl = document.getElementById('error');
-        dot.classList.remove('ok');
-        label.textContent = 'Failed to reach API';
-        errorEl.textContent = err instanceof Error ? err.message : String(err);
+        const errorEl = document.getElementById('error'); // Use global error element
+
+        if (dot) dot.classList.remove('ok');
+        if (label) label.textContent = 'Failed to reach API';
+        // Only show connectivity error if dot/label exist, or updating errorEl if found
+        if (errorEl) errorEl.textContent = err instanceof Error ? err.message : String(err);
+        return null;
     }
 }
 
@@ -1970,7 +1985,10 @@ function renderControlForm() {
     renderHAEntitiesTable();
 
     select.removeEventListener('change', renderHAEntitiesTable);
-    select.addEventListener('change', renderHAEntitiesTable);
+    select.addEventListener('change', () => {
+        renderHAEntitiesTable();
+        scheduleControlSave();
+    });
 }
 
 function renderHAEntitiesTable() {
@@ -2033,7 +2051,14 @@ function renderHAEntitiesTable() {
                     }
                 }
 
-                const displayValue = currentVal || entityObj.default || 'Click to select...';
+                // Force defaults into the config if missing, so they exist for the driver
+                if (!currentVal && entityObj.default) {
+                    currentVal = entityObj.default;
+                    if (!currentDriverConfig.entity_map) currentDriverConfig.entity_map = {};
+                    currentDriverConfig.entity_map[entityObj.key] = currentVal;
+                }
+
+                const displayValue = currentVal || 'Click to select...';
                 button.textContent = displayValue;
                 button.dataset.default = entityObj.default || '';
 
@@ -2068,6 +2093,7 @@ function renderHAEntitiesTable() {
                         if (!currentDriverConfig.entity_map) currentDriverConfig.entity_map = {};
                         currentDriverConfig.entity_map[entityObj.key] = selectedId;
                         validateEntity(selectedId || entityObj.default);
+                        scheduleControlSave();
                     });
                 };
 
@@ -2130,6 +2156,7 @@ function renderHAEntitiesTable() {
                 if (type === 'float') v = parseFloat(v);
                 if (type === 'int') v = parseInt(v, 10);
                 currentDriverConfig.config[key] = v;
+                scheduleControlSave();
             };
 
             field.appendChild(input);
@@ -2161,12 +2188,8 @@ async function saveControlSettings() {
     const driverId = select.value;
     if (!driverId) return;
 
-    const btn = document.getElementById('saveControlBtn');
-    const originalText = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Saving...';
-
-    setHAEntitiesMessage('');
+    // Use a quieter indicator since we auto-save
+    // If message is 'Saving changes...', keep it. If empty/null, maybe set it.
 
     try {
         // Sync special entities to global settings if present in driver config
@@ -2200,19 +2223,26 @@ async function saveControlSettings() {
                 config: currentDriverConfig.config || {}
             })
         });
-        setHAEntitiesMessage('Settings saved successfully.', 'success');
+        setHAEntitiesMessage('Saved configuration.', 'success');
+        setTimeout(() => {
+            // Clear success message after a bit to keep UI clean
+            const msgEl = document.getElementById('controlMessage');
+            if (msgEl && msgEl.textContent === 'Saved configuration.') {
+                msgEl.style.display = 'none';
+                msgEl.textContent = '';
+            }
+        }, 3000);
     } catch (err) {
         setHAEntitiesMessage('Failed to save: ' + err.message, 'error');
     } finally {
-        btn.disabled = false;
-        btn.textContent = originalText;
+        controlSaveTimer = null;
     }
 }
 
 async function refreshForecast() {
     const forecastMessage = document.getElementById('forecastMessage');
-    forecastMessage.textContent = 'Loading latest forecast…';
-    forecastMessage.classList.remove('error');
+    // Removed "Loading latest forecast..." per user request to avoid blinking
+    if (forecastMessage) forecastMessage.classList.remove('error');
     try {
         const payload = await fetchJson('api/forecast');
         applyForecast(payload);
@@ -2227,14 +2257,36 @@ async function refreshAll() {
     if (refreshAllPromise) {
         return refreshAllPromise;
     }
-    const tasks = [refreshStatus(), refreshForecast()];
-    refreshAllPromise = Promise.all(tasks)
-        .catch(() => {
-            // individual refresh functions already surface their own errors
-        })
-        .finally(() => {
+
+    refreshAllPromise = (async () => {
+        try {
+            // 1. Fetch Status first
+            const statusPayload = await refreshStatus();
+
+            // 2. Check if we need to fetch forecast
+            let shouldFetchForecast = false;
+
+            if (statusPayload && statusPayload.last_updated) {
+                // Backend reports a specific timestamp
+                if (statusPayload.last_updated !== lastForecastTimestamp) {
+                    shouldFetchForecast = true;
+                    lastForecastTimestamp = statusPayload.last_updated;
+                }
+            } else if (!lastForecastTimestamp) {
+                // First load or indeterminate state -> fetch
+                shouldFetchForecast = true;
+            }
+
+            if (shouldFetchForecast) {
+                await refreshForecast();
+            }
+        } catch (err) {
+            console.error("Refresh sequence failed:", err);
+        } finally {
             refreshAllPromise = null;
-        });
+        }
+    })();
+
     return refreshAllPromise;
 }
 
@@ -2250,7 +2302,6 @@ async function triggerTraining() {
         errorEl.textContent = err instanceof Error ? `Failed to start training: ${err.message}` : String(err);
     }
     await refreshAll();
-    button.textContent = button.disabled ? 'Training…' : 'Trigger Training';
 }
 
 async function triggerCycle() {
@@ -2279,8 +2330,8 @@ async function triggerCycle() {
             messageEl.textContent = err instanceof Error ? err.message : String(err);
         }
         if (button) {
+            // applyStatus will handle state, but ensure it's not "Starting..." if we failed
             button.disabled = false;
-            button.textContent = 'Recompute Plan';
         }
     }
     await refreshAll();
@@ -2301,7 +2352,8 @@ window.addEventListener('DOMContentLoaded', () => {
         [pvTrigger, 'pv_power'],
         [batteryTrigger, 'battery_soc'],
     ].forEach(([trigger, target]) => {
-        bindClick(trigger, () => openEntityModal(target));
+        const el = typeof trigger === 'string' ? document.getElementById(trigger) : trigger;
+        if (el) bindClick(el, () => openEntityModal(target));
     });
     Object.entries(batteryFieldConfigs).forEach(([fieldKey, config]) => {
         if (!config.input) {
@@ -2314,6 +2366,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (exportLimitToggle) {
         exportLimitToggle.addEventListener('change', (event) => {
             updateExportLimitSetting(event.target.checked);
+            scheduleControlSave();
         });
     }
     const exportEnabledToggle = document.getElementById('exportEnabledToggle');
@@ -2427,5 +2480,8 @@ window.addEventListener('DOMContentLoaded', () => {
         if (!showingSettings) {
             refreshAll();
         }
-    }, 5 * 60 * 1000);
+    }, 1000); // 1s quick update interval per user request
+
+    // Initial fetch to avoid blank screen
+    refreshAll();
 });

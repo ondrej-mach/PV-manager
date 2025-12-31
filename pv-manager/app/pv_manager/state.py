@@ -731,16 +731,23 @@ class AppContext:
             new_house, changed_house = await _apply("house_consumption", ha_entities.house_consumption)
             if new_house is not None:
                 ha_entities.house_consumption = new_house
-                if changed_house:
-                    changed = True
-                    catalog_changed = True
+            elif changed_house:
+                # User requested clear, but this field is mandatory. Set to empty.
+                ha_entities.house_consumption = EntitySelection(entity_id="") # type: ignore
+                
+            if changed_house:
+                changed = True
+                catalog_changed = True
 
             new_pv, changed_pv = await _apply("pv_power", ha_entities.pv_power)
             if new_pv is not None:
                 ha_entities.pv_power = new_pv
-                if changed_pv:
-                    changed = True
-                    catalog_changed = True
+            elif changed_pv:
+                ha_entities.pv_power = EntitySelection(entity_id="") # type: ignore
+                
+            if changed_pv:
+                changed = True
+                catalog_changed = True
 
             if "soc_sensor" in payload:
                 block = payload.get("soc_sensor")
@@ -883,23 +890,19 @@ class AppContext:
         """Update one or more settings sections with a partial payload."""
         payload = self._require_mapping(data)
 
-        # Track if catalogs need refresh (only inverter updates trigger this)
-        refresh_stats = False
-        refresh_entities = False
+        # Track if catalogs were refreshed (only ha_entities updates trigger this)
+        catalog_refreshed = False
 
         # Update each section if present in payload
         if "ha_entities" in payload:
-            # HA entities updates may require catalog refresh
-            result = await self.update_ha_entities_settings(payload["ha_entities"])
-            # Extract refresh flags from result by checking if catalogs changed
-            # The update already saved settings and refreshed catalogs if needed
-            # We'll skip the final refresh since it was already done
-            return result  # Already includes full response
-        
-        # Backward compatibility for "inverter" key
-        if "inverter" in payload:
-             result = await self.update_ha_entities_settings(payload["inverter"])
-             return result
+            # HA entities updates trigger catalog refresh internally
+            # We ignore the return value as we rebuild the full response at the end
+            await self.update_ha_entities_settings(payload["ha_entities"])
+            catalog_refreshed = True
+        elif "inverter" in payload:
+             # Backward compatibility
+             await self.update_ha_entities_settings(payload["inverter"])
+             catalog_refreshed = True
 
         if "battery" in payload:
             await self.update_battery_settings(payload["battery"])
@@ -907,14 +910,22 @@ class AppContext:
         if "pricing" in payload:
             await self.update_pricing_settings(payload["pricing"])
 
+        if "auto_training_enabled" in payload:
+            val = payload["auto_training_enabled"]
+            if isinstance(val, bool):
+                async with self._settings_lock:
+                    if self._settings.auto_training_enabled != val:
+                        self._settings.auto_training_enabled = val
+                        save_settings(self._settings)
+
         # Return unified response
         async with self._settings_lock:
             serialized = self._serialize_settings(self._settings)
 
         return await self._build_settings_response(
             serialized,
-            refresh_stats=refresh_stats,
-            refresh_entities=refresh_entities,
+            refresh_stats=catalog_refreshed,
+            refresh_entities=catalog_refreshed,
         )
 
 

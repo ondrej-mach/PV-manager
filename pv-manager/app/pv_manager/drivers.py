@@ -158,27 +158,18 @@ class GoodWeDriver(InverterDriver):
         batt_to_grid = battery_flows.get("batt_to_grid_kw", 0.0)
         load_kw = battery_flows.get("load_kw", 0.0)
         
-        # Calculate total battery charge and discharge
-        battery_charge_kw = grid_to_batt + pv_to_batt
-        battery_discharge_kw = batt_to_load + batt_to_grid
-        
         # Thresholds
-        MIN_POWER_KW = 0.05  # 50W minimum threshold
+        MIN_POWER_KW = 0.02  # 20W minimum threshold
         
         # Determine intervention type based on battery flows
         target_mode = None
-        target_soc = None
-        target_power_val = None
-        intervention_type = None
-        
-        if battery_charge_kw < MIN_POWER_KW and battery_discharge_kw < MIN_POWER_KW:
-            # Battery is idle
-            intervention_type = "DISABLE_BATTERY"
-            target_mode = "eco_charge"
-            target_soc = 0
-            target_power_val = 0
-            
-        elif grid_to_batt > MIN_POWER_KW:
+        # Default: disable battery (Idle)
+        intervention_type = "DISABLE_BATTERY"
+        target_mode = "eco_charge"
+        target_soc = 0
+        target_power_val = 100  # Max power to ensure mode is active (prevent self-use fallback)
+
+        if grid_to_batt > MIN_POWER_KW:
             # Battery is being charged from grid
             intervention_type = "CHARGE_FROM_GRID"
             target_mode = "eco_charge"
@@ -199,13 +190,7 @@ class GoodWeDriver(InverterDriver):
             # Battery is covering load (self-consumption)
             intervention_type = "COVER_LOAD"
             target_mode = "general"  # Let inverter manage naturally
-            
-        else:
-            # Default: disable battery
-            intervention_type = "DISABLE_BATTERY"
-            target_mode = "eco_charge"
-            target_soc = 0
-            target_power_val = 0
+            # target_soc and target_power_val remain at defaults (unused for general mode usually, but safe)
 
         # Execute commands based on mode
         _LOGGER.info(
