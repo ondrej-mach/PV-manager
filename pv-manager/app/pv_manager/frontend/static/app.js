@@ -12,6 +12,7 @@ let dateTimeFormatter;
 let forecastChart;
 let planChart;
 let gridChart;
+let deferrableLoadChart;
 let priceImputedFlags = [];
 let showingSettings = false;
 let statisticsCatalog = [];
@@ -665,7 +666,7 @@ function applySettingsPayload(payload) {
         refreshEntityCatalogs(payload.entities);
     }
     if (payload.settings) {
-        if (payload.settings.ha_entities) {
+        if (payload.settings.ha_entities && !haEntitiesPendingResave) {
             haEntitiesSettings = payload.settings.ha_entities;
         }
         if (payload.settings.battery) {
@@ -680,6 +681,7 @@ function applySettingsPayload(payload) {
     renderHAEntitiesForm();
     renderBatteryForm();
     renderPricingForm();
+    renderDeferrableLoads();
     updateChartVisibility();
 }
 
@@ -760,7 +762,7 @@ function renderHAEntitiesForm() {
     renderHAEntitiesTable();
 
     if (exportLimitToggle) {
-        exportLimitToggle.checked = Boolean(haEntitiesSettings.export_power_limited);
+        setSafeCheck(exportLimitToggle, haEntitiesSettings.export_power_limited);
         if (haEntitiesBusy) {
             exportLimitToggle.setAttribute('disabled', 'disabled');
         } else {
@@ -812,7 +814,7 @@ function renderBatteryFieldInput(fieldKey, options = {}) {
         return;
     }
     const value = batterySettings ? batterySettings[fieldKey] : null;
-    config.input.value = formatBatteryFieldDisplayValue(config, value);
+    setSafeValue(config.input, formatBatteryFieldDisplayValue(config, value));
     if (batteryBusy) {
         config.input.setAttribute('disabled', 'disabled');
     } else {
@@ -854,21 +856,38 @@ function setPricingMessage(text, kind = 'info', autoHideMs = 0) {
     setMessage(pricingMessage, text, kind, autoHideMs, 'pricing');
 }
 
+function setSafeValue(input, value) {
+    if (!input) return;
+    if (document.activeElement === input) return;
+    const strVal = (value === null || value === undefined) ? '' : String(value);
+    if (input.value !== strVal) {
+        input.value = strVal;
+    }
+}
+
+function setSafeCheck(input, value) {
+    if (!input) return;
+    if (document.activeElement === input) return;
+    const boolVal = Boolean(value);
+    if (input.checked !== boolVal) input.checked = boolVal;
+}
+
 function setNumericInputValue(input, value) {
     if (!input) return;
+    let valStr = '';
     if (Number.isFinite(value)) {
-        input.value = value.toString();
-    } else if (value === null || value === undefined) {
-        input.value = '';
-    } else {
+        valStr = value.toString();
+    } else if (value !== null && value !== undefined) {
         const parsed = Number(value);
-        input.value = Number.isFinite(parsed) ? parsed.toString() : '';
+        if (Number.isFinite(parsed)) valStr = parsed.toString();
     }
+    setSafeValue(input, valStr);
 }
 
 function setTimeInputValue(input, value, fallback) {
     if (!input) return;
-    input.value = sanitizeTimeValue(value, fallback);
+    const val = sanitizeTimeValue(value, fallback);
+    setSafeValue(input, val);
 }
 
 function updateTariffVisibility(scope) {
@@ -910,7 +929,7 @@ function renderPricingForm() {
     const exportEnabledToggle = document.getElementById('exportEnabledToggle');
     const exportSettingsContainer = document.getElementById('exportSettingsContainer');
     if (exportEnabledToggle) {
-        exportEnabledToggle.checked = Boolean(pricingSettings.export_enabled);
+        setSafeCheck(exportEnabledToggle, pricingSettings.export_enabled);
     }
     if (exportSettingsContainer) {
         exportSettingsContainer.style.display = pricingSettings.export_enabled ? 'block' : 'none';
@@ -1065,7 +1084,7 @@ async function loadSettingsData() {
         const autoTrainingToggle = document.getElementById('autoTrainingToggle');
         if (autoTrainingToggle) {
             const enabled = payload.settings ? payload.settings.auto_training_enabled : false;
-            autoTrainingToggle.checked = Boolean(enabled);
+            setSafeCheck(autoTrainingToggle, enabled);
         }
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1306,12 +1325,14 @@ function openEntityModal(target) {
     }
     const modalTitle = document.getElementById('entityModalTitle');
     if (modalTitle) {
-        if (target === 'pv_power') {
-            modalTitle.textContent = 'Select PV sensor';
+        if (target === 'pv_power' || target === 'GENERIC_POWER') {
+            modalTitle.textContent = 'Select Power Sensor';
         } else if (target === 'soc_sensor') {
-            modalTitle.textContent = 'Select battery SoC sensor';
+            modalTitle.textContent = 'Select Battery SoC Sensor';
+        } else if (target === 'GENERIC_SWITCH') {
+            modalTitle.textContent = 'Select Control Switch';
         } else {
-            modalTitle.textContent = 'Select house sensor';
+            modalTitle.textContent = 'Select Sensor';
         }
     }
     if (entitySearchInput) {
@@ -1354,6 +1375,15 @@ function renderEntityList(searchTerm) {
     } else if (entityModalTarget === 'DRIVER_CONFIG') {
         catalog = entityCatalog;
         filterByDomain = activeDriverEntityDomain;
+    } else if (entityModalTarget === 'GENERIC_SWITCH') {
+        // Filter catalog for switch-like entities
+        catalog = entityCatalog.filter(e =>
+            e.entity_id.startsWith('switch.') ||
+            e.entity_id.startsWith('light.') ||
+            e.entity_id.startsWith('input_boolean.')
+        );
+    } else if (entityModalTarget === 'GENERIC_POWER') {
+        catalog = powerEntityCatalog;
     } else {
         catalog = powerEntityCatalog;
     }
@@ -1401,7 +1431,7 @@ function renderEntityList(searchTerm) {
     noneOption.addEventListener('click', () => {
         const targetKey = entityModalTarget;
         closeEntityModal();
-        if (targetKey === 'DRIVER_CONFIG') {
+        if (targetKey === 'DRIVER_CONFIG' || targetKey === 'GENERIC_POWER' || targetKey === 'GENERIC_SWITCH') {
             if (activeDriverEntityCallback) activeDriverEntityCallback(null);
         } else if (targetKey) {
             updateHAEntitySelection(targetKey, null);
@@ -1428,7 +1458,7 @@ function renderEntityList(searchTerm) {
         option.addEventListener('click', () => {
             const targetKey = entityModalTarget;
             closeEntityModal();
-            if (targetKey === 'DRIVER_CONFIG') {
+            if (targetKey === 'DRIVER_CONFIG' || targetKey === 'GENERIC_POWER' || targetKey === 'GENERIC_SWITCH') {
                 if (activeDriverEntityCallback) activeDriverEntityCallback(item.entity_id);
             } else if (targetKey) {
                 updateHAEntitySelection(targetKey, item.entity_id);
@@ -1831,6 +1861,48 @@ function ensureGridChart() {
     });
 }
 
+function ensureDeferrableLoadChart() {
+    if (deferrableLoadChart) return;
+    const ctx = document.getElementById('deferrableLoadChart');
+    if (!ctx) return; // Element might not exist if HTML mismatch
+
+    deferrableLoadChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: [],
+            datasets: [],
+        },
+        options: {
+            locale: activeLocale || undefined,
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    ticks: { maxRotation: 0, autoSkip: true },
+                    stacked: true,
+                },
+                y: {
+                    stacked: true,
+                    title: { display: true, text: 'Power (kW)' },
+                    beginAtZero: true,
+                },
+            },
+            plugins: {
+                legend: { display: true },
+                tooltip: {
+                    callbacks: {
+                        label(context) {
+                            const value = Number(context.parsed.y || 0);
+                            const label = context.dataset.label || '';
+                            return `${label}: ${numberFmt2.format(value)} kW`;
+                        }
+                    }
+                }
+            },
+        },
+    });
+}
+
 function applyForecast(payload) {
     const series = payload.series || {};
     const forecastMessage = document.getElementById('forecastMessage');
@@ -1910,6 +1982,48 @@ function applyForecast(payload) {
     gridChart.data.datasets[0].data = sanitizedImport;
     gridChart.data.datasets[1].data = sanitizedExport;
     gridChart.update();
+
+    // -- Update Deferrable Load Chart --
+    ensureDeferrableLoadChart();
+    if (deferrableLoadChart) {
+        deferrableLoadChart.data.labels = labels;
+
+        // Define palette
+        const palette = ['#a855f7', '#06b6d4', '#eab308', '#ec4899', '#84cc16'];
+
+        // Build datasets
+        const datasets = [];
+        const loads = (haEntitiesSettings && Array.isArray(haEntitiesSettings.deferrable_loads))
+            ? haEntitiesSettings.deferrable_loads
+            : [];
+
+        // We iterate based on potential columns `def_load_0`, `def_load_1`... 
+        // We assume up to 10 loads or use the settings length
+        const maxCheck = loads.length > 0 ? loads.length : 5;
+
+        for (let i = 0; i < maxCheck; i++) {
+            const colName = `def_load_${i}`;
+            const rawData = series[colName];
+
+            // Only add dataset if data exists and is not all zero (optional, or just if column exists)
+            // Ideally we check if column exists in series
+            if (!rawData && loads.length === 0) continue; // Skip if no settings and no data
+
+            const dataValues = sanitizeSeries(rawData || zeros);
+            // If we have settings, get name. Else "Load i"
+            const name = (loads[i] && loads[i].name) ? loads[i].name : `Load ${i + 1}`;
+
+            datasets.push({
+                label: name,
+                data: dataValues,
+                backgroundColor: palette[i % palette.length],
+                borderRadius: 2,
+            });
+        }
+
+        deferrableLoadChart.data.datasets = datasets;
+        deferrableLoadChart.update();
+    }
 
     updateSummary(payload.summary);
     forecastMessage.textContent = '';
@@ -1997,172 +2111,190 @@ function renderHAEntitiesTable() {
     if (!select || !container) return;
 
     const driverId = select.value;
-    container.innerHTML = '';
 
-    const table = document.createElement('table');
-    table.className = 'driver-entity-table';
-    table.innerHTML = `
-        <thead>
-            <tr>
-                <th>Entity</th>
-                <th>Domain</th>
-                <th>Entity ID</th>
-            </tr>
-        </thead>
-        <tbody></tbody>
-    `;
-    const tbody = table.querySelector('tbody');
+    // 1. Structure Setup (Lazy Creation)
+    let table = container.querySelector('.driver-entity-table');
+    let tbody;
 
-    // --- Driver Entities ---
+    // Ensure Table
+    if (!table) {
+        if (!driverId) {
+            container.innerHTML = '';
+            return;
+        }
+
+        table = document.createElement('table');
+        table.className = 'driver-entity-table';
+        table.innerHTML = `
+            <thead>
+                <tr>
+                    <th>Entity</th>
+                    <th>Domain</th>
+                    <th>Entity ID</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        `;
+        if (container.firstChild) container.insertBefore(table, container.firstChild);
+        else container.appendChild(table);
+    }
+    tbody = table.querySelector('tbody');
+
+    // 2. Prepare Data
     let driver = null;
+    let requiredEntities = [];
     if (driverId) {
         driver = availableDrivers.find(d => d.id === driverId);
-        if (driver && driver.required_entities && driver.required_entities.length > 0) {
-            driver.required_entities.forEach(entityObj => {
-                const row = document.createElement('tr');
-
-                const labelCell = document.createElement('td');
-                labelCell.textContent = entityObj.label || entityObj.key.replace(/_/g, ' ');
-                row.appendChild(labelCell);
-
-                const domainCell = document.createElement('td');
-                domainCell.textContent = entityObj.domain;
-                domainCell.className = 'driver-entity-domain';
-                row.appendChild(domainCell);
-
-                const entityCell = document.createElement('td');
-                const button = document.createElement('button');
-                button.type = 'button';
-                button.className = 'driver-entity-button';
-                if (haEntitiesBusy) button.disabled = true;
-
-                // Determine current value:
-                // 1. Check driver config (user override for this driver)
-                // 2. If special key (house/pv/soc), check global settings
-                // 3. Fallback to default
-                let currentVal = currentDriverConfig.entity_map ? currentDriverConfig.entity_map[entityObj.key] : null;
-
-                if (!currentVal && ['house_consumption', 'pv_power', 'soc_sensor'].includes(entityObj.key)) {
-                    if (haEntitiesSettings && haEntitiesSettings[entityObj.key]) {
-                        currentVal = haEntitiesSettings[entityObj.key].entity_id;
-                        // Pre-fill into driver config so it gets saved if user doesn't touch it
-                        if (!currentDriverConfig.entity_map) currentDriverConfig.entity_map = {};
-                        currentDriverConfig.entity_map[entityObj.key] = currentVal;
-                    }
-                }
-
-                // Force defaults into the config if missing, so they exist for the driver
-                if (!currentVal && entityObj.default) {
-                    currentVal = entityObj.default;
-                    if (!currentDriverConfig.entity_map) currentDriverConfig.entity_map = {};
-                    currentDriverConfig.entity_map[entityObj.key] = currentVal;
-                }
-
-                const displayValue = currentVal || 'Click to select...';
-                button.textContent = displayValue;
-                button.dataset.default = entityObj.default || '';
-
-                const validateEntity = (val) => {
-                    button.classList.remove('valid-default', 'valid-custom', 'invalid');
-
-                    if (!val || val === 'Click to select...') {
-                        button.classList.add('invalid');
-                        return;
-                    }
-
-                    const exists = entityCatalog.some(e => e.entity_id === val);
-                    const matchesDomain = val.startsWith(entityObj.domain + '.');
-
-                    if (exists && matchesDomain) {
-                        const savedVal = currentDriverConfig.entity_map ? currentDriverConfig.entity_map[entityObj.key] : null;
-                        const isUsingDefault = !savedVal && val === entityObj.default;
-
-                        if (isUsingDefault || val === entityObj.default) {
-                            button.classList.add('valid-default');
-                        } else {
-                            button.classList.add('valid-custom');
-                        }
-                    } else {
-                        button.classList.add('invalid');
-                    }
-                };
-
-                button.onclick = () => {
-                    openEntityModalForDriver(entityObj.key, entityObj.domain, entityObj.default, (selectedId) => {
-                        button.textContent = selectedId || entityObj.default || 'Click to select...';
-                        if (!currentDriverConfig.entity_map) currentDriverConfig.entity_map = {};
-                        currentDriverConfig.entity_map[entityObj.key] = selectedId;
-                        validateEntity(selectedId || entityObj.default);
-                        scheduleControlSave();
-                    });
-                };
-
-                validateEntity(displayValue);
-
-                entityCell.appendChild(button);
-                row.appendChild(entityCell);
-
-                tbody.appendChild(row);
-            });
+        if (driver && driver.required_entities) {
+            requiredEntities = driver.required_entities;
         }
+    } else {
+        container.innerHTML = '';
+        return;
     }
 
-    container.appendChild(table);
+    // 3. Reconcile Table Rows
+    Array.from(tbody.children).forEach((row, i) => {
+        if (i >= requiredEntities.length) row.remove();
+    });
 
-    // Driver Config
-    if (driver && driver.config_schema && Object.keys(driver.config_schema).length > 0) {
-        const configHeader = document.createElement('h4');
-        configHeader.textContent = "Driver Configuration";
-        configHeader.style.marginTop = "1.5rem";
-        configHeader.style.marginBottom = "0.5rem";
-        container.appendChild(configHeader);
+    requiredEntities.forEach((entityObj, index) => {
+        let row = tbody.children[index];
+        if (!row) {
+            row = document.createElement('tr');
+            row.innerHTML = '<td></td><td class="driver-entity-domain"></td><td><button type="button" class="driver-entity-button"></button></td>';
+            const btn = row.querySelector('button');
+            btn.addEventListener('click', () => {
+                if (haEntitiesBusy) return;
+                openEntityModalForDriver(entityObj.key, entityObj.domain, entityObj.default, (selectedId) => {
+                    if (!currentDriverConfig.entity_map) currentDriverConfig.entity_map = {};
+                    currentDriverConfig.entity_map[entityObj.key] = selectedId;
+                    renderHAEntitiesTable();
+                    scheduleControlSave();
+                });
+            });
+            tbody.appendChild(row);
+        }
 
-        const grid = document.createElement('div');
-        grid.className = 'driver-config-grid';
+        // Update Content
+        const curLabel = entityObj.label || entityObj.key.replace(/_/g, ' ');
+        if (row.children[0].textContent !== curLabel) row.children[0].textContent = curLabel;
+        if (row.children[1].textContent !== entityObj.domain) row.children[1].textContent = entityObj.domain;
 
-        driver.config_schema.forEach(schemaItem => {
+        const button = row.querySelector('button');
+        if (haEntitiesBusy) button.disabled = true;
+        else button.disabled = false;
+
+        let currentVal = currentDriverConfig.entity_map ? currentDriverConfig.entity_map[entityObj.key] : null;
+
+        if (!currentVal && ['house_consumption', 'pv_power', 'soc_sensor'].includes(entityObj.key)) {
+            if (haEntitiesSettings && haEntitiesSettings[entityObj.key]) {
+                currentVal = haEntitiesSettings[entityObj.key].entity_id;
+                if (!currentDriverConfig.entity_map) currentDriverConfig.entity_map = {};
+                currentDriverConfig.entity_map[entityObj.key] = currentVal;
+            }
+        }
+        if (!currentVal && entityObj.default) {
+            currentVal = entityObj.default;
+            if (!currentDriverConfig.entity_map) currentDriverConfig.entity_map = {};
+            currentDriverConfig.entity_map[entityObj.key] = currentVal;
+        }
+
+        const displayValue = currentVal || 'Click to select...';
+        if (button.textContent !== displayValue) button.textContent = displayValue;
+
+        button.classList.remove('valid-default', 'valid-custom', 'invalid');
+        if (!currentVal || currentVal === 'Click to select...') {
+            button.classList.add('invalid');
+        } else {
+            const exists = entityCatalog.some(e => e.entity_id === currentVal);
+            const matchesDomain = currentVal.startsWith(entityObj.domain + '.');
+            if (exists && matchesDomain) {
+                const isDefault = currentVal === entityObj.default;
+                button.classList.add(isDefault ? 'valid-default' : 'valid-custom');
+            } else {
+                button.classList.add('invalid');
+            }
+        }
+    });
+
+    // 4. Driver Config Reconciliation
+    let configHeader = container.querySelector('h4');
+    let grid = container.querySelector('.driver-config-grid');
+
+    const hasConfig = driver && driver.config_schema && Object.keys(driver.config_schema).length > 0;
+
+    if (!hasConfig) {
+        if (configHeader) configHeader.remove();
+        if (grid) grid.remove();
+    } else {
+        if (!configHeader) {
+            configHeader = document.createElement('h4');
+            configHeader.textContent = "Driver Configuration";
+            configHeader.style.marginTop = "1.5rem";
+            configHeader.style.marginBottom = "0.5rem";
+            container.appendChild(configHeader);
+        }
+        if (!grid) {
+            grid = document.createElement('div');
+            grid.className = 'driver-config-grid';
+            container.appendChild(grid);
+        }
+
+        const schemaItems = driver.config_schema;
+
+        Array.from(grid.children).forEach((field, i) => {
+            if (i >= schemaItems.length) field.remove();
+        });
+
+        schemaItems.forEach((schemaItem, index) => {
             const key = schemaItem.key;
             const type = schemaItem.type;
 
-            const field = document.createElement('div');
-            field.className = 'field';
+            let field = grid.children[index];
+            if (!field) {
+                field = document.createElement('div');
+                field.className = 'field';
 
-            const label = document.createElement('label');
-            label.textContent = schemaItem.label || key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-            field.appendChild(label);
+                const label = document.createElement('label');
+                field.appendChild(label);
 
-            const input = document.createElement('input');
-            if (type === 'float' || type === 'int') {
-                input.type = 'number';
-                input.step = type === 'float' ? '0.1' : '1';
-            } else {
-                input.type = 'text';
+                const input = document.createElement('input');
+                if (type === 'float' || type === 'int') {
+                    input.type = 'number';
+                    input.step = type === 'float' ? '0.1' : '1';
+                } else {
+                    input.type = 'text';
+                }
+
+                input.onchange = (e) => {
+                    if (!currentDriverConfig.config) currentDriverConfig.config = {};
+                    let v = e.target.value;
+                    if (type === 'float') v = parseFloat(v);
+                    if (type === 'int') v = parseInt(v, 10);
+                    currentDriverConfig.config[key] = v;
+                    scheduleControlSave();
+                };
+
+                field.appendChild(input);
+                grid.appendChild(field);
             }
 
-            const val = currentDriverConfig.config ? currentDriverConfig.config[key] : undefined;
-            // Use default if value is missing
-            const effectiveVal = val !== undefined && val !== '' ? val : (schemaItem.default !== undefined ? schemaItem.default : '');
-            input.value = effectiveVal;
+            const labelEl = field.querySelector('label');
+            const properLabel = schemaItem.label || key.replace(/_/g, ' ').replace(/\w/g, l => l.toUpperCase());
+            if (labelEl.textContent !== properLabel) labelEl.textContent = properLabel;
 
-            // Ensure the config object has this value if it was missing, so it gets saved
+            const input = field.querySelector('input');
+            const val = currentDriverConfig.config ? currentDriverConfig.config[key] : undefined;
+            const effectiveVal = val !== undefined && val !== '' ? val : (schemaItem.default !== undefined ? schemaItem.default : '');
+
+            setSafeValue(input, effectiveVal);
+
             if (val === undefined && schemaItem.default !== undefined) {
                 if (!currentDriverConfig.config) currentDriverConfig.config = {};
                 currentDriverConfig.config[key] = schemaItem.default;
             }
-
-            input.onchange = (e) => {
-                if (!currentDriverConfig.config) currentDriverConfig.config = {};
-                let v = e.target.value;
-                if (type === 'float') v = parseFloat(v);
-                if (type === 'int') v = parseInt(v, 10);
-                currentDriverConfig.config[key] = v;
-                scheduleControlSave();
-            };
-
-            field.appendChild(input);
-            grid.appendChild(field);
         });
-        container.appendChild(grid);
     }
 }
 
@@ -2197,14 +2329,30 @@ async function saveControlSettings() {
         const globalUpdates = {};
         let hasGlobalUpdates = false;
 
-        if (currentDriverConfig.entity_map) {
-            specialKeys.forEach(key => {
-                if (currentDriverConfig.entity_map[key]) {
-                    globalUpdates[key] = { entity_id: currentDriverConfig.entity_map[key] };
-                    hasGlobalUpdates = true;
+        const driver = availableDrivers.find(d => d.id === driverId);
+
+        specialKeys.forEach(key => {
+            let valToSync = null;
+
+            // 1. Check explicit override in map
+            if (currentDriverConfig.entity_map && currentDriverConfig.entity_map[key]) {
+                valToSync = currentDriverConfig.entity_map[key];
+            }
+            // 2. If no override, check default from driver (if available)
+            // This ensures that if we clear an override, we revert the global setting to the default,
+            // preventing the global setting from "sticking" to the old custom value.
+            else if (driver && driver.required_entities) {
+                const ent = driver.required_entities.find(e => e.key === key);
+                if (ent && ent.default) {
+                    valToSync = ent.default;
                 }
-            });
-        }
+            }
+
+            if (valToSync) {
+                globalUpdates[key] = { entity_id: valToSync };
+                hasGlobalUpdates = true;
+            }
+        });
 
         if (hasGlobalUpdates) {
             await fetchJson('api/settings', {
@@ -2247,9 +2395,37 @@ async function refreshForecast() {
         const payload = await fetchJson('api/forecast');
         applyForecast(payload);
     } catch (err) {
-        forecastMessage.textContent = err instanceof Error ? err.message : String(err);
-        forecastMessage.classList.add('error');
-        renderIntervention(null, `Current intervention unavailable: ${err instanceof Error ? err.message : String(err)}`);
+        let msg = err instanceof Error ? err.message : String(err);
+
+        // Try to parse JSON error (fastapi returns {"detail": "..."})
+        if (msg.startsWith('{')) {
+            try {
+                const parsed = JSON.parse(msg);
+                if (parsed.detail) msg = parsed.detail;
+            } catch (e) { /* ignore */ }
+        }
+
+        // Special handling for "Forecast not ready" (503) during startup
+        // Avoid "Current intervention unavailable" scary red text, just show info.
+        if (msg.includes('Forecast not ready')) {
+            if (forecastMessage) {
+                forecastMessage.textContent = 'Forecast is being generated...';
+                forecastMessage.classList.remove('error');
+            }
+            // Don't flash intervention banner with error
+            renderIntervention(null, 'Waiting for forecast...');
+            // Optionally add .none class to banner to make it gray instead of red/orange
+            const banner = document.getElementById('interventionBanner');
+            if (banner) {
+                banner.className = 'intervention-banner none';
+            }
+        } else {
+            if (forecastMessage) {
+                forecastMessage.textContent = msg;
+                forecastMessage.classList.add('error');
+            }
+            renderIntervention(null, `Current intervention unavailable: ${msg}`);
+        }
     }
 }
 
@@ -2266,15 +2442,25 @@ async function refreshAll() {
             // 2. Check if we need to fetch forecast
             let shouldFetchForecast = false;
 
-            if (statusPayload && statusPayload.last_updated) {
+            if (statusPayload && statusPayload.snapshot_available && statusPayload.last_updated) {
                 // Backend reports a specific timestamp
                 if (statusPayload.last_updated !== lastForecastTimestamp) {
                     shouldFetchForecast = true;
                     lastForecastTimestamp = statusPayload.last_updated;
                 }
-            } else if (!lastForecastTimestamp) {
-                // First load or indeterminate state -> fetch
-                shouldFetchForecast = true;
+            } else {
+                // Forecast not available. Do NOT poll /api/forecast as it will return 503.
+                shouldFetchForecast = false;
+
+                // If we are in this state, ensuring no error is displayed
+                const forecastMessage = document.getElementById('forecastMessage');
+                if (forecastMessage && (!statusPayload || !statusPayload.snapshot_available)) {
+                    // Update text only if it was showing an error
+                    if (forecastMessage.classList.contains('error')) {
+                        forecastMessage.classList.remove('error');
+                        forecastMessage.textContent = 'Results will appear here after training.';
+                    }
+                }
             }
 
             if (shouldFetchForecast) {
@@ -2337,11 +2523,388 @@ async function triggerCycle() {
     await refreshAll();
 }
 
+// --------------------------------------------------------------------------
+// Deferrable Loads Logic
+// --------------------------------------------------------------------------
+
+function initDeferrableLoads() {
+    const addBtn = document.getElementById('addLoadBtn');
+    const container = document.getElementById('deferrableLoadsList');
+
+    if (addBtn) {
+        addBtn.addEventListener('click', () => {
+            if (!haEntitiesSettings) haEntitiesSettings = {};
+            if (!haEntitiesSettings.deferrable_loads) haEntitiesSettings.deferrable_loads = [];
+            haEntitiesSettings.deferrable_loads.push({
+                name: '',
+                nominal_power_kw: 0.0,
+                switch_entity: '',
+                power_entity: null,
+                opt_mode: 'smart_dump',
+                opt_value_start_eur: 0.05,
+                opt_saturation_kwh: 10.0,
+                opt_prevent_overshoot: false
+            });
+            renderDeferrableLoads();
+
+            // Expand the new load automatically
+            const container = document.getElementById('deferrableLoadsList');
+            if (container && container.lastElementChild) {
+                container.lastElementChild.classList.add('expanded');
+                const input = container.lastElementChild.querySelector('.load-name');
+                if (input) input.focus();
+            }
+
+            scheduleSaveHAEntities();
+        });
+    }
+
+
+
+    if (!container) return;
+
+    // --- Unified Event Delegation ---
+
+    // 0. Toggle Expansion
+    container.addEventListener('click', (e) => {
+        // Check if clicked header or toggle
+        if (e.target.closest('.load-header') && !e.target.closest('.remove-load-btn')) {
+            const row = e.target.closest('.load-item');
+            if (row) {
+                row.classList.toggle('expanded');
+            }
+        }
+    });
+
+    // 1. Inputs (Text/Number): Handle immediate changes
+    container.addEventListener('input', (e) => {
+        const row = e.target.closest('.load-item');
+        if (!row) return;
+        const index = parseInt(row.getAttribute('data-index'));
+        if (isNaN(index)) return;
+
+        const load = haEntitiesSettings.deferrable_loads[index];
+        if (!load) return;
+
+        if (e.target.classList.contains('load-name')) {
+            load.name = e.target.value;
+            // Update Header Title immediately
+            const titleEl = row.querySelector('.load-header-title');
+            if (titleEl) titleEl.textContent = load.name || 'New Load';
+
+            if (!load.name) e.target.classList.add('error');
+            else e.target.classList.remove('error');
+        }
+
+        else if (e.target.classList.contains('load-nominal-power')) {
+            load.nominal_power_kw = parseFloat(e.target.value) || 0;
+            if (!e.target.value || parseFloat(e.target.value) <= 0) e.target.classList.add('error');
+            else e.target.classList.remove('error');
+        }
+        else if (e.target.classList.contains('load-opt-start-value')) {
+            load.opt_value_start_eur = parseFloat(e.target.value) || 0;
+        }
+        else if (e.target.classList.contains('load-opt-saturation')) {
+            load.opt_saturation_kwh = parseFloat(e.target.value) || 0;
+        }
+
+        // Debounced save
+        scheduleSaveHAEntities();
+    });
+
+    // 2. Selects / Checkboxes ('change' event)
+    container.addEventListener('change', (e) => {
+        const row = e.target.closest('.load-item');
+        if (!row) return;
+        const index = parseInt(row.getAttribute('data-index'));
+        if (isNaN(index)) return;
+
+        const load = haEntitiesSettings.deferrable_loads[index];
+        if (!load) return;
+
+        if (e.target.classList.contains('load-opt-mode')) {
+            load.opt_mode = e.target.value;
+            // Update UI visibility immediately
+            const customSettings = row.querySelector('.custom-curve-settings');
+            if (customSettings) {
+                customSettings.style.display = load.opt_mode === 'custom_curve' ? 'block' : 'none';
+            }
+        }
+        else if (e.target.classList.contains('load-opt-overshoot')) {
+            load.opt_prevent_overshoot = e.target.checked;
+        }
+
+        scheduleSaveHAEntities();
+    });
+
+    // 3. Clicks (Buttons: Remove, Entity Select)
+    container.addEventListener('click', (e) => {
+        const row = e.target.closest('.load-item');
+        if (!row) return;
+        const index = parseInt(row.getAttribute('data-index'));
+        if (isNaN(index)) return;
+
+        // Remove
+        if (e.target.closest('.remove-load-btn')) {
+            if (confirm('Remove this load?')) {
+                haEntitiesSettings.deferrable_loads.splice(index, 1);
+                renderDeferrableLoads(true); // Force re-render/cleanup
+                scheduleSaveHAEntities();
+            }
+            return;
+        }
+
+        const load = haEntitiesSettings.deferrable_loads[index];
+        if (!load) return;
+
+        // Switch Entity Select
+        if (e.target.closest('.load-switch-entity')) {
+            openEntityModal('GENERIC_SWITCH');
+            activeDriverEntityCallback = (entityId) => {
+                // Fetch fresh load object
+                const currentLoad = haEntitiesSettings.deferrable_loads[index];
+                if (currentLoad) {
+                    currentLoad.switch_entity = entityId || '';
+                    renderDeferrableLoads(); // Update button text
+                    scheduleSaveHAEntities();
+                }
+            };
+        }
+        // Power Entity Select
+        else if (e.target.closest('.load-power-entity')) {
+            openEntityModal('GENERIC_POWER');
+            activeDriverEntityCallback = (entityId) => {
+                const currentLoad = haEntitiesSettings.deferrable_loads[index];
+                if (currentLoad) {
+                    if (entityId) currentLoad.power_entity = { entity_id: entityId, unit: null };
+                    else currentLoad.power_entity = null;
+                    renderDeferrableLoads();
+                    scheduleSaveHAEntities();
+                }
+            };
+        }
+    });
+}
+
+
+function resolveEntityLabel(entityId) {
+    if (!entityId) return '';
+    // Check all catalogs
+    const all = [].concat(entityCatalog || [], powerEntityCatalog || [], batteryEntityCatalog || []);
+    const match = all.find(e => e.entity_id === entityId);
+    if (match && match.name) {
+        return `${match.name} (${entityId})`;
+    }
+    return entityId;
+}
+
+function renderDeferrableLoads(force = false) {
+    const container = document.getElementById('deferrableLoadsList');
+    if (!container) return;
+
+    if (force) {
+        container.innerHTML = '';
+    }
+
+    const loads = (haEntitiesSettings && haEntitiesSettings.deferrable_loads) ? haEntitiesSettings.deferrable_loads : [];
+    const template = document.getElementById('loadItemTemplate');
+    if (!template) return;
+
+    // Handle empty state
+    if (loads.length === 0) {
+        if (container.children.length === 0 || container.querySelector('.message')) {
+            container.innerHTML = '<div class="message">No loads defined.</div>';
+        } else {
+            container.innerHTML = '<div class="message">No loads defined.</div>';
+        }
+        return;
+    }
+
+    // Remove "No loads defined" message if present
+    const msg = container.querySelector('.message');
+    if (msg) msg.remove();
+
+    // 1. Reconcile Rows (Remove extra rows)
+    Array.from(container.children).forEach((child, i) => {
+        if (i >= loads.length) {
+            child.remove();
+        }
+    });
+
+    // 2. Update/Create Rows
+    loads.forEach((load, index) => {
+        let row = container.children[index];
+
+        // Create if missing
+        if (!row) {
+            const clone = template.content.cloneNode(true);
+            row = clone.querySelector('.load-item');
+            if (!row) return;
+
+            row.setAttribute('data-index', index);
+            container.appendChild(clone);
+            // Get live reference
+            row = container.children[index];
+        } else {
+            // Update index attribute in case of shifts
+            row.setAttribute('data-index', index);
+        }
+
+        // --- Update Header Title ---
+        const titleEl = row.querySelector('.load-header-title');
+        if (titleEl) {
+            const titleText = load.name || 'New Load';
+            if (titleEl.textContent !== titleText) titleEl.textContent = titleText;
+        }
+
+        // --- Update Functions (Safety Checks) ---
+        const updateInput = (selector, val) => {
+            const el = row.querySelector(selector);
+            if (el && document.activeElement !== el) {
+                if (el.value != val) el.value = val;
+            }
+            if (el && selector === '.load-name') {
+                if (!val) el.classList.add('error');
+                else el.classList.remove('error');
+            }
+            if (el && selector === '.load-nominal-power') {
+                if (!val || parseFloat(val) <= 0) el.classList.add('error');
+                else el.classList.remove('error');
+            }
+        };
+
+        const updateCheck = (selector, val) => {
+            const el = row.querySelector(selector);
+            if (el && document.activeElement !== el) el.checked = Boolean(val);
+        };
+
+        // --- Apply Values ---
+        updateInput('.load-name', load.name || '');
+        updateInput('.load-nominal-power', load.nominal_power_kw);
+        updateInput('.load-opt-start-value', (load.opt_value_start_eur !== undefined) ? load.opt_value_start_eur : 0.05);
+        updateInput('.load-opt-saturation', (load.opt_saturation_kwh !== undefined) ? load.opt_saturation_kwh : 10.0);
+        updateCheck('.load-opt-overshoot', load.opt_prevent_overshoot);
+
+        // Mode Select & Visibility
+        const modeSel = row.querySelector('.load-opt-mode');
+        if (modeSel && document.activeElement !== modeSel) {
+            modeSel.value = load.opt_mode || 'smart_dump';
+            const customSettings = row.querySelector('.custom-curve-settings');
+            if (customSettings) {
+                // Ensure visibility matches mode
+                // Note: user might be changing it right now via 'change' event which updates 'load'
+                // But if this is a background update, we enforce it.
+                // If user just changed it, load.opt_mode is updated, so this is safe.
+                customSettings.style.display = modeSel.value === 'custom_curve' ? 'block' : 'none';
+            }
+        }
+
+        // --- Buttons (Text Only) ---
+        const switchBtn = row.querySelector('.load-switch-entity');
+        if (switchBtn) {
+            const currentId = load.switch_entity || '';
+            const label = resolveEntityLabel(currentId) || 'Select switch...';
+            if (switchBtn.textContent !== label) switchBtn.textContent = label;
+
+            if (!currentId) switchBtn.classList.add('error');
+            else switchBtn.classList.remove('error');
+        }
+
+        const powerBtn = row.querySelector('.load-power-entity');
+        if (powerBtn) {
+            const currentId = (load.power_entity && load.power_entity.entity_id) ? load.power_entity.entity_id : '';
+            const label = resolveEntityLabel(currentId) || 'Select sensor...';
+            if (powerBtn.textContent !== label) powerBtn.textContent = label;
+        }
+
+        // Remove Button (just needs to exist, delegation handles click)
+        const removeBtn = row.querySelector('.remove-load-btn');
+        if (removeBtn) removeBtn.setAttribute('data-index', index);
+    });
+}
+
+function populateEntitySelect(select, catalog, currentVal, includeNone = false) {
+    select.innerHTML = '';
+    if (includeNone) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'None';
+        select.appendChild(opt);
+    }
+
+    const sorted = [...catalog].sort((a, b) => (a.name || a.entity_id).localeCompare(b.name || b.entity_id));
+
+    sorted.forEach(ent => {
+        const opt = document.createElement('option');
+        opt.value = ent.entity_id;
+        opt.textContent = `${ent.name || ent.entity_id} (${ent.entity_id})`;
+        if (ent.entity_id === currentVal) opt.selected = true;
+        select.appendChild(opt);
+    });
+
+    if (currentVal && !sorted.find(c => c.entity_id === currentVal) && currentVal !== '') {
+        const opt = document.createElement('option');
+        opt.value = currentVal;
+        opt.textContent = `Missing: ${currentVal}`;
+        opt.selected = true;
+        select.insertBefore(opt, select.firstChild);
+    }
+}
+
+let haEntitiesSaveTimer = null;
+let haEntitiesPendingResave = false;
+
+function scheduleSaveHAEntities() {
+    if (haEntitiesSaveTimer) clearTimeout(haEntitiesSaveTimer);
+    setHAEntitiesMessage('Saving changes...', 'pending');
+    haEntitiesSaveTimer = setTimeout(saveHAEntitiesSettings, 1000);
+}
+
+async function saveHAEntitiesSettings() {
+    if (!haEntitiesSettings) return;
+
+    // If already saving, mark that we need to save again (queuing the latest state)
+    if (haEntitiesBusy) {
+        haEntitiesPendingResave = true;
+        return;
+    }
+
+    haEntitiesBusy = true;
+    setEntityTriggersDisabled(true);
+    try {
+        const payload = await fetchJson('api/settings', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ha_entities: haEntitiesSettings }),
+        });
+
+        // Only apply updates if we don't have new pending local changes
+        if (!haEntitiesPendingResave) {
+            applySettingsPayload(payload);
+        }
+
+        setHAEntitiesMessage('Saved.', 'success', 2000);
+    } catch (err) {
+        setHAEntitiesMessage(err instanceof Error ? err.message : String(err), 'error');
+    } finally {
+        haEntitiesBusy = false;
+        setEntityTriggersDisabled(false);
+
+        // Process queued save
+        if (haEntitiesPendingResave) {
+            haEntitiesPendingResave = false;
+            scheduleSaveHAEntities();
+        }
+    }
+}
+
+
 window.addEventListener('DOMContentLoaded', () => {
     bindClick(document.getElementById('refreshBtn'), refreshAll);
     bindClick(document.getElementById('trainBtn'), triggerTraining);
     bindClick(document.getElementById('cycleBtn'), triggerCycle);
     bindClick(document.getElementById('settingsBtn'), toggleSettings);
+    initDeferrableLoads();
     document.querySelectorAll('.settings-nav button').forEach((btn) => {
         btn.addEventListener('click', () => {
             activateSettingsTab(btn.dataset.settingsTab);

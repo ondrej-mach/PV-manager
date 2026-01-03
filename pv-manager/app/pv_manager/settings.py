@@ -106,6 +106,20 @@ class EntitySelection:
 
 
 @dataclass
+class DeferrableLoad:
+    name: str
+    nominal_power_kw: float
+    switch_entity: str
+    power_entity: Optional[EntitySelection] = None
+
+    # Optimization Config
+    opt_mode: str = "smart_dump"  # "smart_dump" or "custom_curve"
+    opt_value_start_eur: float = 0.05
+    opt_saturation_kwh: float = 10.0
+    opt_prevent_overshoot: bool = False
+
+
+@dataclass
 class HAEntitiesSettings:
     house_consumption: EntitySelection
     pv_power: EntitySelection
@@ -114,6 +128,7 @@ class HAEntitiesSettings:
     driver_id: Optional[str] = None
     driver_config: Dict[str, Any] = field(default_factory=dict)
     entity_map: Dict[str, str] = field(default_factory=dict)
+    deferrable_loads: List[DeferrableLoad] = field(default_factory=list)
 
     def rename_map(self) -> Dict[str, str]:
         m = {}
@@ -121,6 +136,9 @@ class HAEntitiesSettings:
             m[self.house_consumption.entity_id] = TARGET_COL
         if self.pv_power.entity_id:
             m[self.pv_power.entity_id] = PV_COL
+        # We don't need to rename deferrable loads for the main training logic as they are subtracted manually,
+        # but if we wanted to fetch them via HA history, we'd need them. 
+        # But our current plan uses a separate SQLite DB for them.
         return m
 
     def stat_ids(self) -> list[tuple[str, str]]:
@@ -129,13 +147,15 @@ class HAEntitiesSettings:
             ids.append((self.house_consumption.entity_id, "mean"))
         if self.pv_power.entity_id:
             ids.append((self.pv_power.entity_id, "mean"))
+        # Deferrable loads are logged internally, not fetched from HA stats for training
         return ids
 
     def scales(self) -> Dict[str, float]:
-        return {
+        s = {
             TARGET_COL: self.house_consumption.scale_to_kw(),
             PV_COL: self.pv_power.scale_to_kw(),
         }
+        return s
 
 
 @dataclass
@@ -162,6 +182,7 @@ class AppSettings:
             "driver_id": self.ha_entities.driver_id,
             "driver_config": self.ha_entities.driver_config,
             "entity_map": self.ha_entities.entity_map,
+            "deferrable_loads": [asdict(d) for d in self.ha_entities.deferrable_loads],
         }
         if self.ha_entities.soc_sensor:
             ha_payload["soc_sensor"] = asdict(self.ha_entities.soc_sensor)
@@ -286,6 +307,16 @@ def load_settings() -> AppSettings:
         driver_id=driver_id,
         driver_config=driver_config,
         entity_map=entity_map,
+        deferrable_loads=[
+            DeferrableLoad(
+                name=d.get("name", ""),
+                nominal_power_kw=float(d.get("nominal_power_kw", 0.0)),
+                switch_entity=d.get("switch_entity", ""),
+                power_entity=EntitySelection(**d["power_entity"]) if d.get("power_entity") else None,
+            )
+            for d in ha_data.get("deferrable_loads", [])
+            if isinstance(d, dict)
+        ],
     )
 
     # Battery Settings (minus soc_sensor)

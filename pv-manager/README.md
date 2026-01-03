@@ -1,5 +1,10 @@
 # PV Manager
 
+> [!CAUTION]
+> **Active Development Warning**
+> This add-on is currently in active development. Features may break, configuration formats may change, and strict backward compatibility is not guaranteed.
+> **Do not use in production environments** unless you are actively developing or testing the system.
+
 Smart energy manager for home photovoltaic systems with battery storage.
 
 ## Features

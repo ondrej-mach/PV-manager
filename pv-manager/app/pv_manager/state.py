@@ -24,14 +24,17 @@ from energy_forecaster.services.prediction_service import run_prediction_pipelin
 from energy_forecaster.services.training_service import run_training_pipeline
 from .settings import (
     AppSettings,
+    DeferrableLoad,
     EntitySelection,
     PricingSettings,
     TariffSettings,
     coerce_pricing_payload,
     load_settings,
     save_settings,
+    unit_to_kw_factor,
 )
 from .drivers import InverterManager
+from .history_db import HistoryDatabase
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,11 +42,14 @@ INTERVAL_MINUTES_DEFAULT = 15
 HORIZON_HOURS_DEFAULT = 24
 
 # Use /data for persistent storage in add-on mode, fallback to local directory
-_DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
-if _DATA_DIR.exists() and _DATA_DIR.is_dir():
-    MODELS_DIR_DEFAULT = _DATA_DIR / "trained_models"
+candidate_dir = Path(os.getenv("DATA_DIR", "/data"))
+if candidate_dir.exists() and candidate_dir.is_dir() and os.access(candidate_dir, os.W_OK):
+    _DATA_DIR = candidate_dir
 else:
-    MODELS_DIR_DEFAULT = Path("trained_models")
+    _DATA_DIR = Path("data")
+    _DATA_DIR.mkdir(exist_ok=True)
+
+MODELS_DIR_DEFAULT = _DATA_DIR / "trained_models"
 
 LOOKBACK_DAYS_DEFAULT = 730
 T = TypeVar("T")
@@ -175,6 +181,10 @@ class AppContext:
         self._inverter_manager = InverterManager()
         self._load_inverter_driver_config()
         self._load_control_state()
+        
+        # Initialize history DB using same logic as MODELS_DIR_DEFAULT
+        # Initialize history DB
+        self.history_db = HistoryDatabase(_DATA_DIR / "history.db")
 
     async def _call_in_thread(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         loop = asyncio.get_running_loop()
@@ -419,6 +429,46 @@ class AppContext:
             stat_ids, rename_map, scales = await self._get_inverter_config()
             await self._run_cycle(stat_ids, rename_map, scales)
 
+    async def _log_deferrable_loads(self) -> None:
+        if not self._ha or not self._settings.ha_entities.deferrable_loads:
+            return
+
+        def _fetch_and_process() -> Dict[str, float]:
+            results = {}
+            for load in self._settings.ha_entities.deferrable_loads:
+                # 1. Try Power Entity (preferred for accuracy)
+                if load.power_entity and load.power_entity.entity_id:
+                    eid = load.power_entity.entity_id
+                    state_rec = self._ha.get_entity_state_sync(eid)
+                    if state_rec and "state" in state_rec:
+                        try:
+                            val = float(state_rec["state"])
+                            # Dynamic unit detection
+                            unit = state_rec.get("attributes", {}).get("unit_of_measurement")
+                            # If manual unit is set (legacy), prioritize? No, user said remove manual unit.
+                            # But EntitySelection might have unit=None.
+                            factor = unit_to_kw_factor(unit)
+                            results[eid] = val * factor
+                        except (ValueError, TypeError):
+                            pass
+                
+                # 2. Fallback: Switch Entity + Nominal Power
+                elif load.switch_entity:
+                    eid = load.switch_entity
+                    state_rec = self._ha.get_entity_state_sync(eid)
+                    if state_rec and state_rec.get("state") == "on":
+                        results[eid] = load.nominal_power_kw
+
+            return results
+
+        try:
+            states = await self._call_in_thread(_fetch_and_process)
+            if states:
+                self.history_db.log_states(datetime.now(timezone.utc), states)
+        except Exception as exc:
+            _LOGGER.warning("Failed to log deferrable loads: %s", exc)
+
+
     async def _run_cycle(
         self,
         stat_ids: List[Tuple[str, str]],
@@ -430,6 +480,9 @@ class AppContext:
             _LOGGER.warning("Home Assistant not connected, skipping cycle")
             self._last_cycle_error = "Home Assistant not connected"
             return
+            
+        # Log current state of deferrable loads for history training
+        await self._log_deferrable_loads()
 
         # ... (existing forecast logic) ...
         # We need to capture the plan result to apply control
@@ -785,6 +838,37 @@ class AppContext:
                     ha_entities.export_power_limited = flag_bool
                     changed = True
 
+            if "deferrable_loads" in payload:
+                raw_loads = payload["deferrable_loads"]
+                if isinstance(raw_loads, list):
+                    new_deferrables = []
+                    for item in raw_loads:
+                        if not isinstance(item, dict):
+                            continue
+                        
+                        # Power Entity is now Optional
+                        p_raw = item.get("power_entity")
+                        if p_raw and isinstance(p_raw, dict) and p_raw.get("entity_id"):
+                            p_sel = EntitySelection(
+                                entity_id=str(p_raw.get("entity_id", "")),
+                                unit=None, # Unit inferred from HA
+                            )
+                        else:
+                            p_sel = None
+
+                        new_deferrables.append(DeferrableLoad(
+                            name=str(item.get("name", "")),
+                            nominal_power_kw=float(item.get("nominal_power_kw", 0.0)),
+                            switch_entity=str(item.get("switch_entity", "")),
+                            power_entity=p_sel,
+                            opt_mode=str(item.get("opt_mode", "smart_dump")),
+                            opt_value_start_eur=float(item.get("opt_value_start_eur", 0.05)),
+                            opt_saturation_kwh=float(item.get("opt_saturation_kwh", 10.0)),
+                            opt_prevent_overshoot=bool(item.get("opt_prevent_overshoot", False)),
+                        ))
+                    ha_entities.deferrable_loads = new_deferrables
+                    changed = True
+
             if changed:
                 save_settings(settings)
             serialized = self._serialize_settings(settings)
@@ -964,7 +1048,7 @@ class AppContext:
         allowed_power_units = {"w", "kw", "mw", "wh", "kwh", "mwh"}
         percent_units = {"%", "percent", "percentage"}
         filtered: list[dict[str, Any]] = []
-        allowed_domains = {"sensor", "number", "input_number", "select", "input_select"}
+        allowed_domains = {"sensor", "number", "input_number", "select", "input_select", "switch", "light", "input_boolean"}
         for entry in entities:
             if not isinstance(entry, dict):
                 continue
@@ -1472,6 +1556,13 @@ class AppContext:
             raise RuntimeError("Home Assistant not initialized")
 
         _LOGGER.info("Starting training pipeline")
+        
+        deferrable_ids = []
+        if self._settings.ha_entities.deferrable_loads:
+            for load in self._settings.ha_entities.deferrable_loads:
+                if load.power_entity and load.power_entity.entity_id:
+                    deferrable_ids.append(load.power_entity.entity_id)
+
         run_training_pipeline(
             stat_ids=stat_ids,
             lookback_days=LOOKBACK_DAYS_DEFAULT,
@@ -1482,5 +1573,7 @@ class AppContext:
             ha=self._ha,
             rename_map=rename_map,
             scales=scales,
+            history_db=self.history_db,
+            deferrable_entity_ids=deferrable_ids,
         )
         _LOGGER.info("Training pipeline finished")

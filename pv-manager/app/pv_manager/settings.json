@@ -14,14 +14,49 @@
       "max_power_kw": 10
     },
     "entity_map": {
-      "operation_mode": null,
-      "eco_mode_power": null,
-      "eco_mode_soc": null,
-      "active_power": null,
+      "operation_mode": "select.goodwe_inverter_operation_mode",
+      "eco_mode_power": "number.goodwe_eco_mode_power",
+      "eco_mode_soc": "number.goodwe_eco_mode_soc",
+      "active_power": "sensor.active_power",
       "house_consumption": "sensor.house_consumption",
       "pv_power": "sensor.pv_power",
       "soc_sensor": "sensor.battery_state_of_charge"
     },
+    "deferrable_loads": [
+      {
+        "name": "Heater",
+        "nominal_power_kw": 2.0,
+        "switch_entity": "switch.tz3000_gjnozsaz_ts011f_2",
+        "power_entity": {
+          "entity_id": "sensor.tz3000_gjnozsaz_ts011f_power_2",
+          "unit": null
+        },
+        "opt_mode": "smart_dump",
+        "opt_value_start_eur": 0.05,
+        "opt_saturation_kwh": 10.0,
+        "opt_prevent_overshoot": false
+      },
+      {
+        "name": "EV Charger",
+        "nominal_power_kw": 3.7,
+        "switch_entity": "switch.smart_outlet_switch",
+        "power_entity": null,
+        "opt_mode": "smart_dump",
+        "opt_value_start_eur": 0.05,
+        "opt_saturation_kwh": 10.0,
+        "opt_prevent_overshoot": false
+      },
+      {
+        "name": "",
+        "nominal_power_kw": 0.0,
+        "switch_entity": "",
+        "power_entity": null,
+        "opt_mode": "smart_dump",
+        "opt_value_start_eur": 0.05,
+        "opt_saturation_kwh": 10.0,
+        "opt_prevent_overshoot": false
+      }
+    ],
     "soc_sensor": {
       "entity_id": "sensor.battery_state_of_charge",
       "unit": "%"

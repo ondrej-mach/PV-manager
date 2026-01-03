@@ -5,7 +5,7 @@ import os
 import pandas as pd
 import cvxpy as cp
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 
 
 @dataclass
@@ -18,6 +18,15 @@ class BatteryConfig:
     ed: float = 0.95  # DC->AC discharge efficiency
     eb_rt: float = 0.96  # internal round-trip (battery cell)
 
+
+@dataclass
+class DeferrableLoadConfig:
+    name: str  # Unique identifier for column matching
+    nominal_power_kw: float
+    opt_mode: str = "smart_dump"  # "smart_dump" or "custom_curve"
+    opt_value_start_eur: float = 0.05
+    opt_saturation_kwh: float = 10.0
+    opt_prevent_overshoot: bool = False
 
 def solve_lp_optimal_control(
     S: pd.DataFrame,
@@ -33,6 +42,7 @@ def solve_lp_optimal_control(
     allow_grid_charging: bool = True,
     export_enabled: bool = True,
     export_limit_kw: Optional[float] = None,
+    deferrable_loads: Optional[List[DeferrableLoadConfig]] = None,
 ) -> pd.DataFrame:
     """Solve linear program for optimal battery dispatch.
 
@@ -135,10 +145,77 @@ def solve_lp_optimal_control(
     batt_to_grid = cp.Variable(N, nonneg=True)
     e = cp.Variable(N + 1)  # kWh
 
+    # Deferrable Loads Variables
+    def_load_vars = []  # List of (config, cp.Variable(N))
+    if deferrable_loads:
+        for dload in deferrable_loads:
+            # Variable represents the power consumed by this specific load [kW]
+            # Must be non-negative
+            var = cp.Variable(N, nonneg=True)
+            def_load_vars.append((dload, var))
+
     grid_import = grid_to_load + grid_to_batt
     grid_export = pv_to_grid + batt_to_grid
     ch_ac = pv_to_batt + grid_to_batt
     dis_ac = batt_to_load + batt_to_grid
+    
+    # Total consumption = Base Load + Deferrable Loads
+    # Note: 'load' array in input S is the "Base Load" (inflexible house consumption)
+    total_load_t = grid_to_load + batt_to_load + pv_to_load
+    
+    # Base load satisfaction constraint
+    # base_load[t] == pv_to_load[t] + batt_to_load[t] + grid_to_load[t]
+    # BUT we need to account for where the deferrable load power comes from.
+    # Actually, the standard convention is:
+    # Sources: PV(t) + GridImport(t) + BatteryDischarge(t)
+    # Sinks: BaseLoad(t) + BatteryCharge(t) + GridExport(t) + Curtailed(t) + Sum(DeferrableLoads(t))
+    #
+    # We need to restructure the energy balance constraints.
+    # Let total_supply = pv[t] + grid_import[t] + dis_ac[t] (AC side)
+    # Let total_demand = load[t] + ch_ac[t] + grid_export[t] + pv_curt[t] + sum(def_load[t])
+    #
+    # However, to maintain the specific flows (grid->batt, pv->batt etc.) logic:
+    # We can assume deferrable loads draw from the common "AC bus".
+    # Since we don't track "PV -> Deferrable" explicitly to avoid huge variable explosion,
+    # we can simplify:
+    # The existing variables (pv_to_load, etc.) cover the BASE load.
+    # We need NEW variables source -> def_load?
+    # Or simpler:
+    # Relax equality: Supply >= Demand? No, must be balanced.
+    # 
+    # Alternative:
+    # Treat Deferrable Loads as an addition to the 'load' array?
+    # No, because we optimize them.
+    #
+    # Let's add explicit source flows for aggregate deferrable demand.
+    # source_pv_to_def = cp.Variable(N)
+    # source_grid_to_def = cp.Variable(N)
+    # source_batt_to_def = cp.Variable(N)
+    # 
+    # This adds 3*M variables.
+    # Simpler: Just ensure Global Power Balance.
+    # pv[t] + grid_import[t] + dis_ac[t] == load[t] + ch_ac[t] + grid_export[t] + pv_curt[t] + sum(def_load[t])
+    # 
+    # AND keep the specific breakdown for Base Load to track "Self Consumption"?
+    # The original code uses `pv_to_load`, etc. to track components.
+    # `load[t] == pv_to_load[t] + batt_to_load[t] + grid_to_load[t]`
+    # 
+    # We can add:
+    # `sum(def_load[t]) == pv_to_def[t] + batt_to_def[t] + grid_to_def[t]`
+    # 
+    # Let's define these aggregate flows to flexible loads.
+    pv_to_def = cp.Variable(N, nonneg=True)
+    grid_to_def = cp.Variable(N, nonneg=True)
+    batt_to_def = cp.Variable(N, nonneg=True)
+    
+    def_load_total = np.zeros(N) # shape placeholder
+    if def_load_vars:
+        def_load_total = sum(v for _, v in def_load_vars)
+
+    grid_import = grid_to_load + grid_to_batt + grid_to_def
+    grid_export = pv_to_grid + batt_to_grid
+    ch_ac = pv_to_batt + grid_to_batt
+    dis_ac = batt_to_load + batt_to_grid + batt_to_def
 
     cons = [
         e[0] == e0,
@@ -162,12 +239,24 @@ def solve_lp_optimal_control(
         reserve_shortfall = cp.Variable(N, nonneg=True)
 
     for t in range(N):
+        # Power Balance
+        # 1. PV Balance
+        cons += [pv[t] == pv_to_load[t] + pv_to_batt[t] + pv_to_grid[t] + pv_curt[t] + pv_to_def[t]]
+        
+        # 2. Base Load Satisfaction
+        cons += [load[t] == pv_to_load[t] + batt_to_load[t] + grid_to_load[t]]
+        
+        # 3. Deferrable Load Satisfaction (Aggregate)
+        if def_load_vars:
+             cons += [def_load_total[t] == pv_to_def[t] + batt_to_def[t] + grid_to_def[t]]
+        else:
+             cons += [pv_to_def[t] == 0, batt_to_def[t] == 0, grid_to_def[t] == 0]
+
         cons += [
-            pv[t] == pv_to_load[t] + pv_to_batt[t] + pv_to_grid[t] + pv_curt[t],
-            load[t] == pv_to_load[t] + batt_to_load[t] + grid_to_load[t],
             ch_ac[t] <= p_batt_max,
             dis_ac[t] <= p_batt_max,
         ]
+        
         if not allow_grid_charging:
             cons += [grid_to_batt[t] == 0]
         
@@ -180,6 +269,16 @@ def solve_lp_optimal_control(
         cons += [e[t + 1] == e_next]
         if reserve_shortfall is not None and soft_soc_target is not None:
             cons += [reserve_shortfall[t] >= cap_kwh * soft_soc_target - e[t + 1]]
+    
+    # Deferrable Constraints
+    for dload, var in def_load_vars:
+        # Power Limit
+        cons += [var <= dload.nominal_power_kw]
+        
+        # Overshoot Limit (Optional)
+        if dload.opt_prevent_overshoot and dload.opt_saturation_kwh > 0:
+            total_energy = cp.sum(cp.multiply(var, dt))
+            cons += [total_energy <= dload.opt_saturation_kwh]
 
     BUY = cp.Constant(prices_import)
     SELL = cp.Constant(prices_export)
@@ -207,6 +306,77 @@ def solve_lp_optimal_control(
         else:
             penalty_weight = max(penalty_weight, 0.0)
         reserve_penalty = penalty_weight * cp.sum(reserve_shortfall)
+    
+    # Deferrable Loads Utility (Negative Cost)
+    def_load_utility = 0.0
+    for dload, var in def_load_vars:
+        # Base Dump Value (always active)
+        # Using a small value e.g. 0.01 or derived from start value if simple mode
+        
+        # Calculate Utility integral: U = Integral(u(e) * de)
+        # For "smart_dump": Utility = Value * Energy (Linear)
+        # For "custom_curve": Utility = V_start * E - (V_start / 2*E_sat) * E^2
+        
+        # Total Energy consumed by this load
+        # Since 'var' is power profile, E_total = sum(var * dt)
+        # BUT this quadratic logic applies to the AGGREGATE energy, which connects variables across time.
+        # Quadratic Objective in CVXPY: cp.sum_squares(x) is convex.
+        # We need Concave Utility (maximize).
+        # Minimize (-Utility) -> Minimize ( Quadratic Term - Linear Term )
+        # Convexity: -(-(a*x^2)) = a*x^2. If a > 0, it is convex.
+        # Our Utility is V*E - k*E^2.
+        # We minimize -(V*E - k*E^2) = k*E^2 - V*E.
+        # This is Convex if k > 0.
+        # k = V_start / (2 * E_sat). V_start > 0, E_sat > 0 => k > 0.
+        # So we can minimize (k * E_total^2 - V_start * E_total).
+        
+        E_total = cp.sum(cp.multiply(var, DT))
+        
+        if dload.opt_mode == "custom_curve" and dload.opt_saturation_kwh > 0:
+            v_start = max(dload.opt_value_start_eur, 0.0)
+            e_sat = dload.opt_saturation_kwh
+            v_dump = 0.01 # Base dump value for tail
+            
+            # Boost component
+            # U_boost(E) approx V_start * E - (V_start / 2 E_sat) * E^2
+            # We want to transition to v_dump after saturation?
+            # User requirement: "Value" decreases to "Value when cost is zero" (dump).
+            # The simplified math in plan:
+            # U_boost = (V_start - V_dump) * E - ...
+            
+            val_diff = max(v_start - v_dump, 0.0)
+            k = val_diff / (2.0 * e_sat)
+            
+            # Since we minimize:
+            # Objective += k * E^2 - (V_start) * E
+            # Wait, V_total = V_boost + V_dump
+            # V_dump * E is linear.
+            # V_boost is the quadratic part.
+            
+            # Linear part: (V_start) * E is applied?
+            # No, if we use the boost formula:
+            # U_boost = val_diff * E - k * E^2
+            # U_dump = v_dump * E
+            # Total U = (val_diff + v_dump) * E - k * E^2 = V_start * E - k * E^2
+            # Min(-U) = k * E^2 - V_start * E
+            
+            def_load_utility += (k * cp.square(E_total)) - (v_start * E_total)
+            
+        else:
+            # Smart Dump or fallback
+            # Simple constant value per kWh
+            # Default to slightly above typical export (e.g. dynamic or fixed)
+            # If user didn't specify, we use a heuristic or the start value
+            val = 0.01 # Default dump value
+            if dload.opt_mode == "custom_curve":
+                val = dload.opt_value_start_eur # Linear if saturation is 0 or missing
+            else:
+                 # Smart Dump: Use a safe margin above 0?
+                 # ideally we track export price, but that varies.
+                 # "Just above zero" as requested.
+                 val = 0.02
+            
+            def_load_utility += -1.0 * (val * E_total)
 
     # Value the stored energy at the end of horizon to incentivize charging from surplus
     # We must account for discharge efficiency (battery -> load), otherwise the optimizer 
@@ -215,7 +385,7 @@ def solve_lp_optimal_control(
     total_discharge_eff = eta_d * eta_b_d
     terminal_value = e[-1] * total_discharge_eff * avg_buy_price
 
-    obj = cp.Minimize(trade_cost + deg_cost + reserve_penalty - terminal_value)
+    obj = cp.Minimize(trade_cost + deg_cost + reserve_penalty + def_load_utility - terminal_value)
 
     prob = cp.Problem(obj, cons)
     used = None
