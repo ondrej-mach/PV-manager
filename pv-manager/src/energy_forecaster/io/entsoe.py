@@ -58,12 +58,16 @@ def fetch_day_ahead_prices_country(
     # cfg is currently unused but kept for signature compatibility
     cfg = cfg or EntsoeClientConfig()
     
+    import requests
+    from entsoe import EntsoePandasClient
+
     token = os.getenv("ENTSOE_TOKEN")
     if not token:
              raise ValueError("No ENTSO-E token found. Set ENTSOE_TOKEN env var.")
 
-    client = EntsoePandasClient(api_key=token)
-    # entsoe-py expects tz-aware timestamps in local bidding zone tz
+    with requests.Session() as session:
+        client = EntsoePandasClient(api_key=token, session=session)
+        # entsoe-py expects tz-aware timestamps in local bidding zone tz
     s = pd.Timestamp(start).tz_convert(tz) if pd.Timestamp(start).tzinfo else pd.Timestamp(start, tz=tz)
     e = pd.Timestamp(end).tz_convert(tz) if pd.Timestamp(end).tzinfo else pd.Timestamp(end, tz=tz)
 

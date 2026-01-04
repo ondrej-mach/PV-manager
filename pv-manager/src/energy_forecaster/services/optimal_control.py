@@ -6,6 +6,9 @@ import pandas as pd
 import cvxpy as cp
 from dataclasses import dataclass
 from typing import Optional, List
+import logging
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -279,6 +282,9 @@ def solve_lp_optimal_control(
         if dload.opt_prevent_overshoot and dload.opt_saturation_kwh > 0:
             total_energy = cp.sum(cp.multiply(var, dt))
             cons += [total_energy <= dload.opt_saturation_kwh]
+            _LOGGER.info("Constraint added for '%s': MaxEnergy=%.2f kWh", dload.name, dload.opt_saturation_kwh)
+        else:
+            _LOGGER.info("No energy constraint for '%s' (PreventOvershoot=%s, Saturation=%.2f)", dload.name, dload.opt_prevent_overshoot, dload.opt_saturation_kwh)
 
     BUY = cp.Constant(prices_import)
     SELL = cp.Constant(prices_export)
@@ -307,6 +313,8 @@ def solve_lp_optimal_control(
             penalty_weight = max(penalty_weight, 0.0)
         reserve_penalty = penalty_weight * cp.sum(reserve_shortfall)
     
+    _LOGGER.info("Solving LP: Avg Buy Price=%.3f, Avg Sell Price=%.3f, Deferrables=%d. ThroughputMode=%s", avg_buy_price, float(np.mean(prices_export)) if len(prices_export) else 0.0, len(def_load_vars), throughput_mode)
+
     # Deferrable Loads Utility (Negative Cost)
     def_load_utility = 0.0
     for dload, var in def_load_vars:
@@ -369,12 +377,11 @@ def solve_lp_optimal_control(
             # If user didn't specify, we use a heuristic or the start value
             val = 0.01 # Default dump value
             if dload.opt_mode == "custom_curve":
-                val = dload.opt_value_start_eur # Linear if saturation is 0 or missing
+                val = dload.opt_value_start_eur 
             else:
-                 # Smart Dump: Use a safe margin above 0?
-                 # ideally we track export price, but that varies.
-                 # "Just above zero" as requested.
-                 val = 0.02
+                 # Smart Dump: User defines the value
+                 val = max(dload.opt_value_start_eur, 0.01)
+
             
             def_load_utility += -1.0 * (val * E_total)
 
@@ -417,7 +424,24 @@ def solve_lp_optimal_control(
         "buy_price_eur_per_kwh": prices_import,
         "sell_price_eur_per_kwh": prices_export,
         "spot_price_eur_per_kwh": prices_base,
+
     })
+
+    if deferrable_loads:
+        for idx, (dload, var) in enumerate(def_load_vars):
+            col_name = f"deferrable_{idx}_kw"
+            if dload.name:
+                # Sanitize name for column
+                safe_name = "".join(c if c.isalnum() else "_" for c in dload.name)
+                col_name = f"load_{safe_name}_kw"
+            
+            if var.value is not None:
+                 total_planned = np.sum(var.value)
+                 _LOGGER.info("Optimization Result '%s': TotalPlanned=%.2f kWh, Value=%.3f, Max=%.2f kW", dload.name, total_planned, dload.opt_value_start_eur, dload.nominal_power_kw)
+                 opt.loc[:, col_name] = var.value
+            else:
+                 _LOGGER.warning("Optimization Result '%s': Variable value is None! (Solver %s)", dload.name, used)
+                 opt.loc[:, col_name] = 0.0
     if cap_kwh > 0:
         opt.loc[:, "soc"] = (np.array(e.value[1:]) / cap_kwh).clip(0, 1)
     else:

@@ -9,7 +9,21 @@ from typing import Any, Dict, Optional
 
 from energy_forecaster.features.data_prep import PV_COL, TARGET_COL
 
-_CONFIG_PATH = Path(__file__).resolve().parent / "settings.json"
+import os
+
+def _get_data_dir() -> Path:
+    # Per user requirement: Use /data if available (e.g. HA Add-on), else ./data
+    candidate = Path("/data")
+    if candidate.exists() and candidate.is_dir() and os.access(candidate, os.W_OK):
+        return candidate
+    
+    local = Path("data")
+    # We ensure local data dir exists if we fallback to it
+    local.mkdir(parents=True, exist_ok=True)
+    return local
+
+DATA_DIR = _get_data_dir()
+_CONFIG_PATH = DATA_DIR / "settings.json"
 
 TARIFF_MODES = {"constant", "spot_plus_constant", "dual_rate"}
 
@@ -117,6 +131,7 @@ class DeferrableLoad:
     opt_value_start_eur: float = 0.05
     opt_saturation_kwh: float = 10.0
     opt_prevent_overshoot: bool = False
+    enabled: bool = True
 
 
 @dataclass
@@ -313,6 +328,11 @@ def load_settings() -> AppSettings:
                 nominal_power_kw=float(d.get("nominal_power_kw", 0.0)),
                 switch_entity=d.get("switch_entity", ""),
                 power_entity=EntitySelection(**d["power_entity"]) if d.get("power_entity") else None,
+                opt_mode=d.get("opt_mode", "smart_dump"),
+                opt_value_start_eur=_sanitize_positive_float(d.get("opt_value_start_eur"), fallback=0.05),
+                opt_saturation_kwh=_sanitize_positive_float(d.get("opt_saturation_kwh"), fallback=10.0),
+                opt_prevent_overshoot=bool(d.get("opt_prevent_overshoot", False)),
+                enabled=bool(d.get("enabled", True)),
             )
             for d in ha_data.get("deferrable_loads", [])
             if isinstance(d, dict)

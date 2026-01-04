@@ -32,6 +32,8 @@ from .settings import (
     load_settings,
     save_settings,
     unit_to_kw_factor,
+    _sanitize_positive_float,
+    DATA_DIR,
 )
 from .drivers import InverterManager
 from .history_db import HistoryDatabase
@@ -41,13 +43,7 @@ _LOGGER = logging.getLogger(__name__)
 INTERVAL_MINUTES_DEFAULT = 15
 HORIZON_HOURS_DEFAULT = 24
 
-# Use /data for persistent storage in add-on mode, fallback to local directory
-candidate_dir = Path(os.getenv("DATA_DIR", "/data"))
-if candidate_dir.exists() and candidate_dir.is_dir() and os.access(candidate_dir, os.W_OK):
-    _DATA_DIR = candidate_dir
-else:
-    _DATA_DIR = Path("data")
-    _DATA_DIR.mkdir(exist_ok=True)
+_DATA_DIR = DATA_DIR
 
 MODELS_DIR_DEFAULT = _DATA_DIR / "trained_models"
 
@@ -124,18 +120,24 @@ class ForecastSnapshot:
                 "battery_to_grid_kw": plan_batt_to_grid.tolist(),
                 "battery_to_load_kw": plan_batt_to_load.tolist(),
             },
-            "history": {
-                "timestamps": history_idx,
-                "load_kw": history_tail[TARGET_COL].ffill().tolist() if TARGET_COL in history_tail.columns else [],
-                "pv_kw": history_tail[PV_COL].ffill().tolist() if PV_COL in history_tail.columns else [],
-            },
-            "summary": self.summary,
-            "summary_window": {
-                "start": idx_iso[0] if idx_iso else None,
-                "end": idx_iso[-1] if idx_iso else None,
-            },
-            "intervention": self.intervention,
         }
+        # Inject dynamic deferrable load columns
+        _LOGGER.debug("Snapshot Plan Columns: %s", self.plan.columns.tolist())
+        for col in self.plan.columns:
+            if col.startswith("load_") or col.startswith("deferrable_"):
+                payload["series"][col] = self.plan[col].reindex(self.forecast_index, fill_value=0.0).tolist()
+        
+        payload["history"] = {
+            "timestamps": history_idx,
+            "load_kw": history_tail[TARGET_COL].ffill().tolist() if TARGET_COL in history_tail.columns else [],
+            "pv_kw": history_tail[PV_COL].ffill().tolist() if PV_COL in history_tail.columns else [],
+        }
+        payload["summary"] = self.summary
+        payload["summary_window"] = {
+            "start": idx_iso[0] if idx_iso else None,
+            "end": idx_iso[-1] if idx_iso else None,
+        }
+        payload["intervention"] = self.intervention
         payload["timezone"] = self.timezone
         if self.locale:
             payload["locale"] = self.locale
@@ -346,6 +348,13 @@ class AppContext:
                     await self._inverter_manager.apply_control(self._ha, None)
                 except Exception as exc:
                     _LOGGER.error("Failed to reset inverter on shutdown: %s", exc)
+            
+            # Close Home Assistant background thread/connection
+            try:
+                self._ha.close_sync(timeout=2.0)
+            except Exception as exc:
+                _LOGGER.error("Failed to close Home Assistant connection: %s", exc)
+
 
         if self._scheduler_task:
             self._scheduler_task.cancel()
@@ -436,6 +445,11 @@ class AppContext:
         def _fetch_and_process() -> Dict[str, float]:
             results = {}
             for load in self._settings.ha_entities.deferrable_loads:
+                status = "enabled" if load.enabled else "disabled"
+                _LOGGER.info(
+                    "Deferrable Load '%s': %s kW, Switch='%s', Mode='%s' [%s]",
+                    load.name, load.nominal_power_kw, load.switch_entity, load.opt_mode, status
+                )
                 # 1. Try Power Entity (preferred for accuracy)
                 if load.power_entity and load.power_entity.entity_id:
                     eid = load.power_entity.entity_id
@@ -510,7 +524,7 @@ class AppContext:
             self._last_cycle_error = None
             
         if snapshot:
-            _LOGGER.info("Forecast cycle complete at %s", snapshot.timestamp.isoformat())
+            _LOGGER.info("Forecast cycle complete at %s. Control Active: %s", snapshot.timestamp.isoformat(), self._control_active)
             
         # Apply control if active
         if self._control_active and snapshot and snapshot.plan is not None and not snapshot.plan.empty:
@@ -528,9 +542,14 @@ class AppContext:
                     "grid_export_kw": float(first_step.get("grid_export_kw", 0.0)),
                 }
                 
+                _LOGGER.info("Applying inverter control (Control Active: %s)", self._control_active)
                 await self._inverter_manager.apply_control(self._ha, battery_flows)
+                
+                # Apply Deferrable Loads Control
+                _LOGGER.info("Applying deferrable loads control. Plan columns: %s", snapshot.plan.columns.tolist() if snapshot.plan is not None else "None")
+                await self._apply_deferrable_loads_control(snapshot.plan)
             except Exception as exc:
-                _LOGGER.error("Failed to apply inverter control: %s", exc)
+                _LOGGER.error("Failed to apply inverter/load control: %s", exc)
 
     def _build_price_series(
         self,
@@ -578,6 +597,61 @@ class AppContext:
         import_series = self._apply_tariff_series(aligned, index, tz, import_cfg, "import")
         export_series = self._apply_tariff_series(aligned, index, tz, export_cfg, "export")
         return aligned, import_series, export_series, imputed_mask
+
+    async def _apply_deferrable_loads_control(self, plan: pd.DataFrame) -> None:
+        """Apply control to deferrable loads based on the optimization plan."""
+        if plan.empty: return
+        
+        # Get first step (current interval)
+        step = plan.iloc[0]
+        
+        settings = self._settings
+        loads = settings.ha_entities.deferrable_loads
+        if not loads: 
+            _LOGGER.debug("No deferrable loads to control")
+            return
+
+        for dload in loads:
+            if not dload.enabled or not dload.switch_entity:
+                _LOGGER.debug("Skipping load %s (disabled or no switch)", dload.name)
+                continue
+
+            # Determine column name used in optimization
+            # Naming convention matches optimal_control.py: load_{sanitized_name}_kw
+            safe_name = "".join(c if c.isalnum() else "_" for c in dload.name)
+            col_name = f"load_{safe_name}_kw"
+            
+            # Check if column exists
+            if col_name not in step:
+                _LOGGER.warning("Load column '%s' not found in plan. Available: %s", col_name, list(step.keys()))
+                continue
+
+            # Check planned power
+            planned_power = float(step.get(col_name, 0.0))
+            
+            # Threshold to consider "ON"
+            # If planned power is significantly > 0, we turn ON.
+            # If 0 (or close to), we turn OFF.
+            # Use small epsilon
+            is_on = planned_power > 0.001
+            
+            state = "on" if is_on else "off"
+            service = "turn_on" if is_on else "turn_off"
+            
+            _LOGGER.info("Deferrable Load '%s': Planned=%.2f kW -> Action=%s", dload.name, planned_power, state)
+            
+            try:
+                # We should check current state to avoid spamming HA?
+                # Or just send command (HA handles idempotency usually)
+                # To be safe and reduce log noise, we might check current state if we had it.
+                # But fetching state might be slow (the issue we just fixed!).
+                # Optimally, we just fire-and-forget the command.
+                await self._ha.call_service(
+                     "switch", service,
+                     target={"entity_id": dload.switch_entity}
+                )
+            except Exception as exc:
+                 _LOGGER.error("Failed to set load '%s' (%s) to %s: %s", dload.name, dload.switch_entity, state, exc)
 
     def _apply_tariff_series(
         self,
@@ -718,6 +792,7 @@ class AppContext:
         current: Optional[EntitySelection],
         block: Dict[str, Any],
         catalog_map: Dict[str, Any],
+        entity_map_catalog: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Optional[EntitySelection], bool]:
         """Updates EntitySelection. Returns (updated_selection, changed)."""
         entity_id = block.get("entity_id", current.entity_id if current else None)
@@ -742,9 +817,12 @@ class AppContext:
             new_unit = meta.get("unit") if meta else None
             if not new_unit and self._ha:
                 try:
+                    # Only do this if we really have to
                     state = await self._call_in_thread(self._ha.get_entity_state_sync, current.entity_id)
-                    if state: new_unit = state.get("attributes", {}).get("unit_of_measurement")
-                except Exception: pass
+                    if state:
+                        new_unit = state.get("attributes", {}).get("unit_of_measurement")
+                except Exception:
+                    pass
         
         if new_unit and current.unit != new_unit:
             current.unit = new_unit
@@ -779,7 +857,7 @@ class AppContext:
                 block = payload.get(key)
                 if not isinstance(block, dict):
                     return current, False
-                return await self._update_entity_selection(current, block, catalog_map)
+                return await self._update_entity_selection(current, block, catalog_map, entity_map_catalog)
 
             new_house, changed_house = await _apply("house_consumption", ha_entities.house_consumption)
             if new_house is not None:
@@ -842,32 +920,45 @@ class AppContext:
                 raw_loads = payload["deferrable_loads"]
                 if isinstance(raw_loads, list):
                     new_deferrables = []
-                    for item in raw_loads:
-                        if not isinstance(item, dict):
+                    for d in raw_loads:
+                        if not isinstance(d, dict):
                             continue
                         
-                        # Power Entity is now Optional
-                        p_raw = item.get("power_entity")
-                        if p_raw and isinstance(p_raw, dict) and p_raw.get("entity_id"):
-                            p_sel = EntitySelection(
-                                entity_id=str(p_raw.get("entity_id", "")),
-                                unit=None, # Unit inferred from HA
-                            )
-                        else:
-                            p_sel = None
+                        p_ent = d.get("power_entity")
+                        power_sel = None
+                        if isinstance(p_ent, dict):
+                            # Try to lookup unit from catalog if available
+                            p_id = p_ent.get("entity_id", "")
+                            p_unit = p_ent.get("unit")
+                            
+                            # Update unit if missing using valid catalog
+                            if p_id and not p_unit and entity_map_catalog and p_id in entity_map_catalog:
+                                 ent_meta = entity_map_catalog[p_id]
+                                 if isinstance(ent_meta, dict):
+                                     p_unit = ent_meta.get("attributes", {}).get("unit_of_measurement")
+                                     
+                            power_sel = EntitySelection(entity_id=p_id, unit=p_unit)
 
                         new_deferrables.append(DeferrableLoad(
-                            name=str(item.get("name", "")),
-                            nominal_power_kw=float(item.get("nominal_power_kw", 0.0)),
-                            switch_entity=str(item.get("switch_entity", "")),
-                            power_entity=p_sel,
-                            opt_mode=str(item.get("opt_mode", "smart_dump")),
-                            opt_value_start_eur=float(item.get("opt_value_start_eur", 0.05)),
-                            opt_saturation_kwh=float(item.get("opt_saturation_kwh", 10.0)),
-                            opt_prevent_overshoot=bool(item.get("opt_prevent_overshoot", False)),
+                            name=d.get("name", ""),
+                            nominal_power_kw=_sanitize_positive_float(d.get("nominal_power_kw"), fallback=0.0),
+                            switch_entity=d.get("switch_entity", ""),
+                            power_entity=power_sel,
+                            opt_mode=d.get("opt_mode", "smart_dump"),
+                            opt_value_start_eur=_sanitize_positive_float(d.get("opt_value_start_eur"), fallback=0.05),
+                            opt_saturation_kwh=_sanitize_positive_float(d.get("opt_saturation_kwh"), fallback=10.0),
+                            opt_prevent_overshoot=bool(d.get("opt_prevent_overshoot", False)),
+                            enabled=bool(d.get("enabled", True)),
                         ))
-                    ha_entities.deferrable_loads = new_deferrables
-                    changed = True
+                    
+                    # We replace the whole list if we are doing a full update
+                    # However, we should be careful. 
+                    # The standard for PATCH here is usually granular updates if matching index?
+                    # BUT, the payload structure for "deferrable_loads" is a list. 
+                    # Typically sending a list means "replace list".
+                    if ha_entities.deferrable_loads != new_deferrables:
+                        ha_entities.deferrable_loads = new_deferrables
+                        changed = True
 
             if changed:
                 save_settings(settings)
@@ -1024,10 +1115,11 @@ class AppContext:
         try:
             catalog = await self._call_in_thread(self._ha.list_statistic_ids_sync)
         except Exception as exc:  # pragma: no cover - best-effort logging
-            _LOGGER.debug("Failed to fetch statistic metadata: %s", exc)
+            _LOGGER.warning("Failed to fetch statistic metadata: %s", exc)
             return self._stat_catalog
 
         await self._sync_units_from_catalog(catalog)
+        _LOGGER.info("Refreshed statistics catalog: %d items found", len(catalog))
         self._stat_catalog = catalog
         return catalog
 
@@ -1312,6 +1404,23 @@ class AppContext:
         # Base price for reference, can be avg
         S["price_eur_per_kwh"] = (import_price + export_price) / 2.0
 
+        # Prepare Deferrable Loads
+        from energy_forecaster.services.optimal_control import DeferrableLoadConfig
+        
+        deferrable_configs = []
+        if self._settings.ha_entities.deferrable_loads:
+            for d in self._settings.ha_entities.deferrable_loads:
+                # Include only enabled and valid loads
+                if d.enabled and d.name and d.nominal_power_kw > 0.0:
+                    deferrable_configs.append(DeferrableLoadConfig(
+                        name=d.name,
+                        nominal_power_kw=d.nominal_power_kw,
+                        opt_mode=d.opt_mode,
+                        opt_value_start_eur=d.opt_value_start_eur,
+                        opt_saturation_kwh=d.opt_saturation_kwh,
+                        opt_prevent_overshoot=d.opt_prevent_overshoot
+                    ))
+        
         plan = solve_lp_optimal_control(
             S=S,
             cfg=batt_cfg,
@@ -1319,6 +1428,7 @@ class AppContext:
             soc0=initial_soc,
             export_enabled=self._settings.pricing.export_enabled,
             export_limit_kw=self._settings.pricing.export_limit_kw,
+            deferrable_loads=deferrable_configs,
         )
         
         # 4. Detect intervention type from first step

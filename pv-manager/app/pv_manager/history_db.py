@@ -15,18 +15,22 @@ class HistoryDatabase:
     def _init_db(self) -> None:
         try:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS deferrable_logs (
-                        timestamp TEXT NOT NULL,
-                        entity_id TEXT NOT NULL,
-                        val REAL,
-                        PRIMARY KEY (timestamp, entity_id)
-                    )
-                """)
-                # Index for fast range scans
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON deferrable_logs(timestamp)")
+            # sqlite3 context manager only handles transaction (commit/rollback), NOT closing!
+            conn = sqlite3.connect(self.db_path)
+            try:
+                with conn:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS deferrable_logs (
+                            timestamp TEXT NOT NULL,
+                            entity_id TEXT NOT NULL,
+                            val REAL,
+                            PRIMARY KEY (timestamp, entity_id)
+                        )
+                    """)
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON deferrable_logs(timestamp)")
+            finally:
+                conn.close()
         except Exception as exc:
             _LOGGER.error("Failed to initialize history database at %s: %s", self.db_path, exc)
 
@@ -37,21 +41,20 @@ class HistoryDatabase:
 
         ts_str = timestamp.isoformat()
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.executemany(
-                    "INSERT OR REPLACE INTO deferrable_logs (timestamp, entity_id, val) VALUES (?, ?, ?)",
-                    [(ts_str, eid, val) for eid, val in states.items()]
-                )
+            conn = sqlite3.connect(self.db_path)
+            try:
+                with conn:
+                    conn.executemany(
+                        "INSERT OR REPLACE INTO deferrable_logs (timestamp, entity_id, val) VALUES (?, ?, ?)",
+                        [(ts_str, eid, val) for eid, val in states.items()]
+                    )
+            finally:
+                conn.close()
         except Exception as exc:
             _LOGGER.error("Failed to log states to history DB: %s", exc)
 
     def get_history(self, start: datetime, end: datetime, entity_ids: List[str]) -> pd.DataFrame:
-        """Retrieve history for specific entities as a DataFrame (pivoted).
-        
-        Returns:
-            DataFrame with index 'timestamp' (datetime) and columns [entity_id1, entity_id2, ...].
-            Values are floats. Missing values are NaN.
-        """
+        """Retrieve history for specific entities as a DataFrame (pivoted)."""
         if not entity_ids:
             return pd.DataFrame()
 
@@ -67,8 +70,13 @@ class HistoryDatabase:
         params = [start_str, end_str] + entity_ids
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                # read_sql_query uses the connection. We don't need transaction for SELECT, 
+                # but closing is mandatory.
                 df = pd.read_sql_query(query, conn, params=params)
+            finally:
+                conn.close()
             
             if df.empty:
                 return pd.DataFrame()

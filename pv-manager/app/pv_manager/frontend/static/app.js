@@ -2002,16 +2002,25 @@ function applyForecast(payload) {
         const maxCheck = loads.length > 0 ? loads.length : 5;
 
         for (let i = 0; i < maxCheck; i++) {
-            const colName = `def_load_${i}`;
+            const load = loads[i];
+            // Robust check for disabled state
+            if (load && (load.enabled === false || String(load.enabled) === 'false')) continue;
+
+            let colName = `deferrable_${i}_kw`; // Fallback
+
+            if (load && load.name) {
+                // Match Python: "".join(c if c.isalnum() else "_" for c in dload.name)
+                const safeName = load.name.replace(/[^a-z0-9]/gi, '_');
+                colName = `load_${safeName}_kw`;
+            }
+
             const rawData = series[colName];
 
-            // Only add dataset if data exists and is not all zero (optional, or just if column exists)
-            // Ideally we check if column exists in series
-            if (!rawData && loads.length === 0) continue; // Skip if no settings and no data
+            // Only add dataset if data exists in the payload (implies it was part of optimization)
+            if (!rawData) continue;
 
             const dataValues = sanitizeSeries(rawData || zeros);
-            // If we have settings, get name. Else "Load i"
-            const name = (loads[i] && loads[i].name) ? loads[i].name : `Load ${i + 1}`;
+            const name = (load && load.name) ? load.name : `Load ${i + 1}`;
 
             datasets.push({
                 label: name,
@@ -2543,7 +2552,9 @@ function initDeferrableLoads() {
                 opt_mode: 'smart_dump',
                 opt_value_start_eur: 0.05,
                 opt_saturation_kwh: 10.0,
-                opt_prevent_overshoot: false
+                opt_saturation_kwh: 10.0,
+                opt_prevent_overshoot: false,
+                enabled: true
             });
             renderDeferrableLoads();
 
@@ -2568,7 +2579,9 @@ function initDeferrableLoads() {
     // 0. Toggle Expansion
     container.addEventListener('click', (e) => {
         // Check if clicked header or toggle
-        if (e.target.closest('.load-header') && !e.target.closest('.remove-load-btn')) {
+        if (e.target.closest('.load-header') &&
+            !e.target.closest('.remove-load-btn') &&
+            !e.target.closest('.toggle-switch-mini')) {
             const row = e.target.closest('.load-item');
             if (row) {
                 row.classList.toggle('expanded');
@@ -2632,6 +2645,9 @@ function initDeferrableLoads() {
         }
         else if (e.target.classList.contains('load-opt-overshoot')) {
             load.opt_prevent_overshoot = e.target.checked;
+        }
+        else if (e.target.classList.contains('load-enabled-toggle')) {
+            load.enabled = e.target.checked;
         }
 
         scheduleSaveHAEntities();
@@ -2778,7 +2794,10 @@ function renderDeferrableLoads(force = false) {
             if (el && document.activeElement !== el) el.checked = Boolean(val);
         };
 
+
+
         // --- Apply Values ---
+        updateCheck('.load-enabled-toggle', load.enabled !== false); // Default True
         updateInput('.load-name', load.name || '');
         updateInput('.load-nominal-power', load.nominal_power_kw);
         updateInput('.load-opt-start-value', (load.opt_value_start_eur !== undefined) ? load.opt_value_start_eur : 0.05);
@@ -2863,8 +2882,11 @@ function scheduleSaveHAEntities() {
 async function saveHAEntitiesSettings() {
     if (!haEntitiesSettings) return;
 
+
+
     // If already saving, mark that we need to save again (queuing the latest state)
     if (haEntitiesBusy) {
+        console.warn("Debug: haEntitiesBusy is TRUE. Returning and queuing.");
         haEntitiesPendingResave = true;
         return;
     }
@@ -2872,11 +2894,13 @@ async function saveHAEntitiesSettings() {
     haEntitiesBusy = true;
     setEntityTriggersDisabled(true);
     try {
+        console.log("Debug: About to call fetchJson('api/settings', PATCH)...");
         const payload = await fetchJson('api/settings', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ha_entities: haEntitiesSettings }),
         });
+        console.log("Debug: fetchJson returned successfully.");
 
         // Only apply updates if we don't have new pending local changes
         if (!haEntitiesPendingResave) {
@@ -2884,8 +2908,10 @@ async function saveHAEntitiesSettings() {
         }
 
         setHAEntitiesMessage('Saved.', 'success', 2000);
+        setHAEntitiesMessage('Saved.', 'success', 2000);
     } catch (err) {
-        setHAEntitiesMessage(err instanceof Error ? err.message : String(err), 'error');
+        console.error("Save failed:", err);
+        setHAEntitiesMessage("Save failed: " + (err instanceof Error ? err.message : String(err)), 'error');
     } finally {
         haEntitiesBusy = false;
         setEntityTriggersDisabled(false);
@@ -3040,7 +3066,9 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 
     setInterval(() => {
-        if (!showingSettings) {
+        // Don't poll if we are viewing settings (modal) OR if we are actively saving anything
+        // This prevents connection pool exhaustion if saving takes a few seconds (e.g. waiting for HA)
+        if (!showingSettings && !haEntitiesBusy && !batteryBusy && !pricingSaving) {
             refreshAll();
         }
     }, 1000); // 1s quick update interval per user request

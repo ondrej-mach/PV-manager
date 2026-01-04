@@ -298,10 +298,16 @@ class HomeAssistant:
 
             # Ensure we connect using the current event loop
             # This is critical for asyncio safety when running in different contexts (e.g. uvicorn vs background thread)
-            ws = await websockets.connect(self.ws_url)
-            await ws.recv()  # auth required message
+            ws = await websockets.connect(self.ws_url, open_timeout=5.0)
+            
+            # Read auth_required message
+            await asyncio.wait_for(ws.recv(), timeout=5.0)
+            
             await ws.send(json.dumps({"type": "auth", "access_token": self.token}))
-            auth_resp = json.loads(await ws.recv())
+            
+            # Read auth response
+            raw_auth = await asyncio.wait_for(ws.recv(), timeout=5.0)
+            auth_resp = json.loads(raw_auth)
 
             if auth_resp.get("type") != "auth_ok":
                 await ws.close()
@@ -335,8 +341,18 @@ class HomeAssistant:
                 message["id"] = self._msg_id
                 self._msg_id += 1
 
-            await ws.send(json.dumps(message))
-            return json.loads(await ws.recv())
+            try:
+                await asyncio.wait_for(ws.send(json.dumps(message)), timeout=5.0)
+            except asyncio.TimeoutError:
+                _LOGGER.error("WebSocket send timed out (id=%s)", message.get("id"))
+                raise
+            
+            try:
+                raw_response = await asyncio.wait_for(ws.recv(), timeout=5.0)
+            except asyncio.TimeoutError:
+                _LOGGER.error("WebSocket recv timed out (id=%s)", message.get("id"))
+                raise
+            return json.loads(raw_response)
 
     async def call_service(
         self,
@@ -622,7 +638,10 @@ class HomeAssistant:
     def list_statistic_ids_sync(self, include_units: bool = True) -> List[Dict[str, Any]]:
         if self._loop:
             fut = asyncio.run_coroutine_threadsafe(self.list_statistic_ids_async(include_units=include_units), self._loop)
-            return fut.result()
+            try:
+                return fut.result(timeout=10.0)
+            except Exception:
+                return []
         return asyncio.run(self.list_statistic_ids_async(include_units=include_units))
 
     async def list_entities_async(self) -> List[Dict[str, Any]]:
@@ -639,7 +658,10 @@ class HomeAssistant:
     def list_entities_sync(self) -> List[Dict[str, Any]]:
         if self._loop:
             fut = asyncio.run_coroutine_threadsafe(self.list_entities_async(), self._loop)
-            return fut.result()
+            try:
+                return fut.result(timeout=10.0)
+            except Exception:
+                return []
         return asyncio.run(self.list_entities_async())
 
     async def get_state_async(self, entity_id: str) -> Optional[Dict[str, Any]]:
@@ -655,7 +677,10 @@ class HomeAssistant:
     def get_entity_state_sync(self, entity_id: str) -> Optional[Dict[str, Any]]:
         if self._loop:
             fut = asyncio.run_coroutine_threadsafe(self.get_state_async(entity_id), self._loop)
-            return fut.result()
+            try:
+                return fut.result(timeout=5.0)
+            except Exception:
+                return None
         return asyncio.run(self.get_state_async(entity_id))
 
     def fetch_last_hours_sync(
@@ -834,7 +859,8 @@ class HomeAssistant:
         Call this when shutting down the addon or when you're done with all operations.
         """
         try:
-            await self._ws.close()
+            if self._ws:
+                await asyncio.wait_for(self._ws.close(), timeout=2.0)
         except Exception:
             # Ignore errors during close
             pass

@@ -320,23 +320,39 @@
                     <template id="loadItemTemplate">
                         <div class="load-item">
                             <div class="load-header">
-                                <div class="load-toggle">
+                                <!-- Left: Icon + Title -->
+                                <div class="load-header-left" style="display:flex; align-items:center; gap:0.75rem;">
                                     <svg class="load-toggle-icon" viewBox="0 0 24 24">
                                         <polyline points="9 18 15 12 9 6"></polyline>
                                     </svg>
                                     <span class="load-header-title">New Load</span>
                                 </div>
-                                <button type="button" class="remove-load-btn" title="Remove Load">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                        <polyline points="3 6 5 6 21 6"></polyline>
-                                        <path
-                                            d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2">
-                                        </path>
-                                    </svg>
-                                </button>
+
+                                <!-- Right: Toggle -->
+                                <div class="load-header-right"
+                                    style="margin-left: auto; display:flex; align-items:center;">
+                                    <!-- Enable Switch (Stop propagation in JS) -->
+                                    <label class="toggle-switch-mini" style="display:flex; align-items:center;"
+                                        title="Enable/Disable Load">
+                                        <input type="checkbox" class="load-enabled-toggle">
+                                        <span class="slider"></span>
+                                    </label>
+                                </div>
                             </div>
 
                             <div class="load-content">
+                                <div
+                                    style="display:flex; justify-content:flex-end; margin-bottom: -1rem; position: relative; z-index: 10;">
+                                    <button type="button" class="remove-load-btn" title="Remove Load">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <polyline points="3 6 5 6 21 6"></polyline>
+                                            <path
+                                                d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2">
+                                            </path>
+                                        </svg>
+                                    </button>
+                                </div>
+
                                 <div class="field">
                                     <label>Name</label>
                                     <input type="text" class="load-name" placeholder="My Device">
@@ -354,6 +370,12 @@
                                 </div>
 
                                 <div class="field">
+                                    <label>Value (€/kWh)</label>
+                                    <input type="number" step="0.01" class="load-opt-start-value" placeholder="0.05">
+                                    <p class="hint">How much running this device is worth to you.</p>
+                                </div>
+
+                                <div class="field">
                                     <label>Optimization Strategy</label>
                                     <select class="load-opt-mode">
                                         <option value="smart_dump">Smart Dump (Automatic)</option>
@@ -363,12 +385,6 @@
 
                                 <div class="custom-curve-settings"
                                     style="display: none; padding-left: 0.75rem; border-left: 3px solid var(--border-color);">
-                                    <div class="field">
-                                        <label>Starting Value (€/kWh)</label>
-                                        <input type="number" step="0.01" class="load-opt-start-value"
-                                            placeholder="0.05">
-                                        <p class="hint">How much the first kWh is worth to you.</p>
-                                    </div>
                                     <div class="field" style="margin-top: 1rem;">
                                         <label>Saturation Point (kWh)</label>
                                         <input type="number" step="0.1" min="0" class="load-opt-saturation"
