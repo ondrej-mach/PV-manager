@@ -143,6 +143,24 @@ def create_application() -> FastAPI:
 
     @app.on_event("startup")
     async def _startup() -> None:
+        # Signal Watchdog: Periodically re-assert signal handlers to prevent 
+        # C-level hijacking by numerical libraries (solvers)
+        import asyncio
+        import signal
+        
+        async def _signal_watchdog() -> None:
+            while True:
+                await asyncio.sleep(1.0)
+                try:
+                    # Force Python to re-register its current handler with the OS
+                    # This fixes desync where C-libs overwrite the handler but Python doesn't know.
+                    current_handler = signal.getsignal(signal.SIGINT)
+                    if callable(current_handler):
+                         signal.signal(signal.SIGINT, current_handler)
+                except Exception:
+                    pass
+
+        asyncio.create_task(_signal_watchdog())
         await ctx.start()
 
     @app.on_event("shutdown")

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import numpy as np
+import cvxpy as cp
 import os
 import pandas as pd
-import cvxpy as cp
+import pandas as pd
+from dataclasses import dataclass
 from dataclasses import dataclass
 from typing import Optional, List
 import logging
@@ -30,6 +32,8 @@ class DeferrableLoadConfig:
     opt_value_start_eur: float = 0.05
     opt_saturation_kwh: float = 10.0
     opt_prevent_overshoot: bool = False
+    is_integer: bool = False
+    opt_max_energy_kwh: Optional[float] = None
 
 def solve_lp_optimal_control(
     S: pd.DataFrame,
@@ -47,19 +51,47 @@ def solve_lp_optimal_control(
     export_limit_kw: Optional[float] = None,
     deferrable_loads: Optional[List[DeferrableLoadConfig]] = None,
 ) -> pd.DataFrame:
-    """Solve linear program for optimal battery dispatch.
-
-    Input S must contain columns: 'pv_kw', 'load_kw', 'dt_h', 'price_eur_per_kwh'.
-    Index should be a DateTimeIndex.
-    Returns DataFrame with dispatch decisions and SoC.
-
-    Optional reserves:
-    - reserve_soc_hard enforces an absolute minimum SoC (fraction of capacity).
-    - reserve_soc_soft encourages staying above a higher SoC via linear penalty.
-    - reserve_soft_penalty_eur_per_kwh overrides the penalty weight (€/kWh) for soft reserve violations.
     """
+    Solves the optimal control problem using Linear Programming (or MILP if integers present).
+    """
+    # cvxpy is imported globally now to ensure any signal handler manipulation
+    # happens BEFORE Uvicorn takes control.
+    
     # sanitize inputs
+    input_S = S
     S = S.copy()
+
+    # Check for integer requirements and solver availability
+    target_mip = False
+    selected_solver = None
+    if deferrable_loads:
+        for d in deferrable_loads:
+            if d.is_integer:
+                target_mip = True
+                break
+
+    if target_mip:
+        available = cp.installed_solvers()
+        # Common MIP solvers supported by cvxpy
+        mip_solvers = {"CBC", "GLPK_MI", "CPLEX", "GUROBI", "SCIP", "XPRESS", "MOSEK", "COPT"}
+        usable_mip = [s for s in available if s in mip_solvers]
+
+        if usable_mip:
+            # CBC is often preferred if available, but take first found
+            if "CBC" in usable_mip:
+                selected_solver = "CBC"
+            elif "GLPK_MI" in usable_mip:
+                selected_solver = "GLPK_MI"
+            else:
+                selected_solver = usable_mip[0]
+            _LOGGER.info("Integer control requested. Using MIP solver: %s", selected_solver)
+        else:
+            _LOGGER.warning("Integer control requested but no MIP solver found (installed: %s). Falling back to continuous control.", available)
+            # Downgrade all loads to continuous to prevent SolverError
+            for d in deferrable_loads:
+                if d.is_integer:
+                    d.is_integer = False
+    
     for c in ("pv_kw", "load_kw"):
         S.loc[:, c] = pd.to_numeric(S[c], errors="coerce").fillna(0.0).clip(lower=0.0)
     S.loc[:, "dt_h"] = pd.to_numeric(S["dt_h"], errors="coerce").fillna(0.0).clip(lower=0.0)
@@ -153,8 +185,16 @@ def solve_lp_optimal_control(
     if deferrable_loads:
         for dload in deferrable_loads:
             # Variable represents the power consumed by this specific load [kW]
-            # Must be non-negative
-            var = cp.Variable(N, nonneg=True)
+            if dload.is_integer:
+                # Integer Mode: Use binary variable scaled by nominal power
+                # Requires integer solver (e.g., CBC, GLPK_MI)
+                _LOGGER.debug("Creating binary variable for load '%s'", dload.name)
+                bin_var = cp.Variable(N, boolean=True)
+                var = bin_var * dload.nominal_power_kw
+            else:
+                # Continuous Mode: Variable between 0 and Nominal
+                var = cp.Variable(N, nonneg=True)
+            
             def_load_vars.append((dload, var))
 
     grid_import = grid_to_load + grid_to_batt
@@ -234,8 +274,8 @@ def solve_lp_optimal_control(
         terminal_energy = cap_kwh * terminal_target
 
     if terminal_energy is not None:
-        # Relax equality to inequality to allow charging from surplus
-        cons.append(e[-1] >= terminal_energy)
+        # Strict equality as requested by user
+        cons.append(e[-1] == terminal_energy)
 
     reserve_shortfall = None
     if soft_soc_target is not None and cap_kwh > 0:
@@ -285,6 +325,12 @@ def solve_lp_optimal_control(
             _LOGGER.info("Constraint added for '%s': MaxEnergy=%.2f kWh", dload.name, dload.opt_saturation_kwh)
         else:
             _LOGGER.info("No energy constraint for '%s' (PreventOvershoot=%s, Saturation=%.2f)", dload.name, dload.opt_prevent_overshoot, dload.opt_saturation_kwh)
+
+        # Max Energy Hard Limit
+        if dload.opt_max_energy_kwh is not None and dload.opt_max_energy_kwh > 0:
+            total_e = cp.sum(cp.multiply(var, dt))
+            cons += [total_e <= dload.opt_max_energy_kwh]
+            _LOGGER.info("Constraint added for '%s': HardLimit=%.2f kWh", dload.name, dload.opt_max_energy_kwh)
 
     BUY = cp.Constant(prices_import)
     SELL = cp.Constant(prices_export)
@@ -354,6 +400,9 @@ def solve_lp_optimal_control(
             
             val_diff = max(v_start - v_dump, 0.0)
             k = val_diff / (2.0 * e_sat)
+            if target_mip:
+                # CBC does not support quadratic costs (MIQP). Linearize by setting k=0.
+                k = 0.0
             
             # Since we minimize:
             # Objective += k * E^2 - (V_start) * E
@@ -368,7 +417,10 @@ def solve_lp_optimal_control(
             # Total U = (val_diff + v_dump) * E - k * E^2 = V_start * E - k * E^2
             # Min(-U) = k * E^2 - V_start * E
             
-            def_load_utility += (k * cp.square(E_total)) - (v_start * E_total)
+            if k > 0:
+                def_load_utility += (k * cp.square(E_total)) - (v_start * E_total)
+            else:
+                def_load_utility += -1.0 * (v_start * E_total)
             
         else:
             # Smart Dump or fallback
@@ -396,10 +448,26 @@ def solve_lp_optimal_control(
 
     prob = cp.Problem(obj, cons)
     used = None
+    # Solve
     try:
-        prob.solve(solver=cp.CLARABEL, verbose=False, max_iter=2000)
-        used = "CLARABEL"
-    except Exception:
+        if selected_solver:
+            prob.solve(solver=selected_solver, verbose=False)
+            used = selected_solver
+        else:
+            prob.solve(solver=cp.CLARABEL, verbose=False, max_iter=2000)
+            used = "CLARABEL"
+    except cp.error.SolverError as exc:
+        if selected_solver:
+            _LOGGER.error("Solver %s failed: %s", selected_solver, exc)
+            raise
+        # Fallback for standard LP
+        prob.solve(solver=cp.SCS, verbose=False, max_iters=100000, eps=1e-5)
+        used = "SCS"
+    except Exception as exc:
+        if selected_solver:
+            _LOGGER.error("Solver %s failed: %s", selected_solver, exc)
+            raise
+        # Fallback for standard LP
         prob.solve(solver=cp.SCS, verbose=False, max_iters=100000, eps=1e-5)
         used = "SCS"
 
@@ -436,9 +504,13 @@ def solve_lp_optimal_control(
                 col_name = f"load_{safe_name}_kw"
             
             if var.value is not None:
-                 total_planned = np.sum(var.value)
+                 raw_vals = np.array(var.value)
+                 # Clip solver noise (tiny values < 0.1W) to 0
+                 raw_vals[raw_vals < 1e-4] = 0.0
+                 
+                 total_planned = np.sum(raw_vals * dt) # Fix: multiply by dt for energy
                  _LOGGER.info("Optimization Result '%s': TotalPlanned=%.2f kWh, Value=%.3f, Max=%.2f kW", dload.name, total_planned, dload.opt_value_start_eur, dload.nominal_power_kw)
-                 opt.loc[:, col_name] = var.value
+                 opt.loc[:, col_name] = raw_vals
             else:
                  _LOGGER.warning("Optimization Result '%s': Variable value is None! (Solver %s)", dload.name, used)
                  opt.loc[:, col_name] = 0.0

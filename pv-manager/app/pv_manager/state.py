@@ -264,13 +264,17 @@ class AppContext:
                 _LOGGER.info("Applying immediate control with battery flows: %s", battery_flows)
                 if self._ha:
                     await self._inverter_manager.apply_control(self._ha, battery_flows)
+                    # Also apply immediate control to deferrable loads
+                    await self._apply_deferrable_loads_control(snapshot.plan)
             else:
                 _LOGGER.warning("No forecast plan available for immediate control application")
         else:
-            _LOGGER.info("Automatic control DISABLED.")
+            _LOGGER.debug("Automatic control DISABLED.")
             # When disabling, reset the inverter to idle state
             if self._ha:
                 await self._inverter_manager.apply_control(self._ha, None)
+                # Also reset deferred loads to OFF
+                await self._reset_deferrable_loads()
 
     async def _save_control_state(self, active: bool) -> None:
         state_path = self.models_dir.parent / "control_state.json"
@@ -346,10 +350,12 @@ class AppContext:
             if self._ha:
                 try:
                     await self._inverter_manager.apply_control(self._ha, None)
+                    await self._reset_deferrable_loads()
                 except Exception as exc:
                     _LOGGER.error("Failed to reset inverter on shutdown: %s", exc)
             
-            # Close Home Assistant background thread/connection
+        # Close Home Assistant background thread/connection
+        if self._ha:
             try:
                 self._ha.close_sync(timeout=2.0)
             except Exception as exc:
@@ -371,9 +377,10 @@ class AppContext:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._manual_cycle_task
             self._manual_cycle_task = None
-        if self._ha:
-            await self._call_in_thread(self._ha.close_sync)
-            self._ha = None
+            self._manual_cycle_task = None
+        
+        # _ha.close_sync() was already called above.
+        self._ha = None
 
     async def _ensure_home_assistant(self) -> None:
         if self._ha is not None:
@@ -446,7 +453,7 @@ class AppContext:
             results = {}
             for load in self._settings.ha_entities.deferrable_loads:
                 status = "enabled" if load.enabled else "disabled"
-                _LOGGER.info(
+                _LOGGER.debug(
                     "Deferrable Load '%s': %s kW, Switch='%s', Mode='%s' [%s]",
                     load.name, load.nominal_power_kw, load.switch_entity, load.opt_mode, status
                 )
@@ -542,11 +549,11 @@ class AppContext:
                     "grid_export_kw": float(first_step.get("grid_export_kw", 0.0)),
                 }
                 
-                _LOGGER.info("Applying inverter control (Control Active: %s)", self._control_active)
+                _LOGGER.debug("Applying inverter control (Control Active: %s)", self._control_active)
                 await self._inverter_manager.apply_control(self._ha, battery_flows)
                 
                 # Apply Deferrable Loads Control
-                _LOGGER.info("Applying deferrable loads control. Plan columns: %s", snapshot.plan.columns.tolist() if snapshot.plan is not None else "None")
+                _LOGGER.debug("Applying deferrable loads control. Plan columns: %s", snapshot.plan.columns.tolist() if snapshot.plan is not None else "None")
                 await self._apply_deferrable_loads_control(snapshot.plan)
             except Exception as exc:
                 _LOGGER.error("Failed to apply inverter/load control: %s", exc)
@@ -598,6 +605,27 @@ class AppContext:
         export_series = self._apply_tariff_series(aligned, index, tz, export_cfg, "export")
         return aligned, import_series, export_series, imputed_mask
 
+    async def _reset_deferrable_loads(self) -> None:
+        """Turn off all enabled deferrable loads (safe state)."""
+        settings = self._settings
+        loads = settings.ha_entities.deferrable_loads
+        if not loads or not self._ha:
+            return
+
+        for dload in loads:
+            if not dload.enabled or not dload.switch_entity:
+                continue
+            
+            try:
+                # Force turn off
+                await self._ha.call_service(
+                     "switch", "turn_off",
+                     target={"entity_id": dload.switch_entity}
+                )
+                _LOGGER.debug("Reset (OFF) deferrable load '%s' (%s)", dload.name, dload.switch_entity)
+            except Exception as exc:
+                 _LOGGER.error("Failed to reset deferrable load '%s': %s", dload.name, exc)
+
     async def _apply_deferrable_loads_control(self, plan: pd.DataFrame) -> None:
         """Apply control to deferrable loads based on the optimization plan."""
         if plan.empty: return
@@ -638,7 +666,20 @@ class AppContext:
             state = "on" if is_on else "off"
             service = "turn_on" if is_on else "turn_off"
             
-            _LOGGER.info("Deferrable Load '%s': Planned=%.2f kW -> Action=%s", dload.name, planned_power, state)
+            _LOGGER.debug("Deferrable Load '%s': Planned=%.2f kW -> Action=%s", dload.name, planned_power, state)
+            
+            # Continuous Control: Set Power Limit
+            if dload.control_type == "continuous" and dload.variable_power_entity:
+                try:
+                    await self._ha.call_service(
+                        "number", "set_value",
+                        target={"entity_id": dload.variable_power_entity},
+                        service_data={"value": planned_power}
+                    )
+                except Exception as exc:
+                    _LOGGER.error("Failed to set power for load '%s' (%s) to %.2f: %s", 
+                                  dload.name, dload.variable_power_entity, planned_power, exc)
+
             
             try:
                 # We should check current state to avoid spamming HA?
@@ -948,7 +989,10 @@ class AppContext:
                             opt_value_start_eur=_sanitize_positive_float(d.get("opt_value_start_eur"), fallback=0.05),
                             opt_saturation_kwh=_sanitize_positive_float(d.get("opt_saturation_kwh"), fallback=10.0),
                             opt_prevent_overshoot=bool(d.get("opt_prevent_overshoot", False)),
+                            opt_max_energy_kwh=_sanitize_positive_float(d.get("opt_max_energy_kwh"), fallback=None, allow_zero=False) if d.get("opt_max_energy_kwh") is not None else None,
                             enabled=bool(d.get("enabled", True)),
+                            control_type=d.get("control_type", "on_off"),
+                            variable_power_entity=d.get("variable_power_entity"),
                         ))
                     
                     # We replace the whole list if we are doing a full update
@@ -1119,7 +1163,7 @@ class AppContext:
             return self._stat_catalog
 
         await self._sync_units_from_catalog(catalog)
-        _LOGGER.info("Refreshed statistics catalog: %d items found", len(catalog))
+        _LOGGER.debug("Refreshed statistics catalog: %d items found", len(catalog))
         self._stat_catalog = catalog
         return catalog
 
@@ -1329,7 +1373,7 @@ class AppContext:
             raise RuntimeError("Home Assistant not initialized")
 
         # 1. Run Prediction Pipeline
-        _LOGGER.info("Starting forecast cycle")
+        _LOGGER.debug("Starting forecast cycle")
         try:
             pred_result = run_prediction_pipeline(
                 ha=self._ha,
@@ -1418,7 +1462,9 @@ class AppContext:
                         opt_mode=d.opt_mode,
                         opt_value_start_eur=d.opt_value_start_eur,
                         opt_saturation_kwh=d.opt_saturation_kwh,
-                        opt_prevent_overshoot=d.opt_prevent_overshoot
+                        opt_prevent_overshoot=d.opt_prevent_overshoot,
+                        is_integer=(d.control_type == "on_off"),
+                        opt_max_energy_kwh=d.opt_max_energy_kwh
                     ))
         
         plan = solve_lp_optimal_control(

@@ -997,7 +997,9 @@ body.modal-open {
 .remove-load-btn svg {
     width: 18px;
     height: 18px;
-}/* --- Mini Toggle Switch --- */
+}
+
+/* --- Mini Toggle Switch --- */
 .toggle-switch-mini {
     position: relative;
     display: inline-block;
@@ -1047,4 +1049,66 @@ body.modal-open {
 
 .toggle-switch-mini input:checked+.slider:before {
     transform: translateX(14px);
+}
+
+/* Tooltips */
+.tooltip-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    color: var(--card-bg);
+    /* Contrast text */
+    font-size: 11px;
+    font-weight: bold;
+    margin-left: 6px;
+    cursor: help;
+    position: relative;
+    vertical-align: middle;
+}
+
+.tooltip-icon:hover::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 140%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1e1e1e;
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: normal;
+    width: max-content;
+    max-width: 240px;
+    text-align: center;
+    z-index: 1000;
+    pointer-events: none;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.tooltip-icon:hover::before {
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    margin-left: -5px;
+    border-width: 5px;
+    border-style: solid;
+    border-color: #1e1e1e transparent transparent transparent;
+}
+
+.load-config-block {
+    margin-left: 12px;
+    padding-left: 16px;
+    border-left: 2px solid var(--border-color);
+    margin-top: 1rem;
+    margin-bottom: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
 }

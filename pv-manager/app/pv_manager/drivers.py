@@ -72,43 +72,43 @@ class GoodWeDriver(InverterDriver):
         return [
             {
                 "key": "house_consumption",
-                "label": "House Consumption Sensor",
+                "label": "House consumption sensor",
                 "domain": "sensor",
                 "default": "sensor.house_consumption"
             },
             {
                 "key": "pv_power",
-                "label": "PV Production Sensor",
+                "label": "PV production sensor",
                 "domain": "sensor",
                 "default": "sensor.pv_power"
             },
             {
                 "key": "soc_sensor",
-                "label": "Battery SoC Sensor",
+                "label": "Battery SoC sensor",
                 "domain": "sensor",
                 "default": "sensor.battery_state_of_charge"
             },
             {
                 "key": "operation_mode", 
-                "label": "Operation Mode Select", 
+                "label": "Operation mode select", 
                 "domain": "select",
                 "default": "select.goodwe_inverter_operation_mode"
             },
             {
                 "key": "eco_mode_power", 
-                "label": "Eco Mode Power %", 
+                "label": "Eco mode power %", 
                 "domain": "number",
                 "default": "number.goodwe_eco_mode_power"
             },
             {
                 "key": "eco_mode_soc", 
-                "label": "Eco Mode SoC Limit %", 
+                "label": "Eco mode SoC limit %", 
                 "domain": "number",
                 "default": "number.goodwe_eco_mode_soc"
             },
             {
                 "key": "active_power", 
-                "label": "Grid Active Power Sensor", 
+                "label": "Grid active power sensor", 
                 "domain": "sensor",
                 "default": "sensor.active_power"
             },
@@ -116,7 +116,7 @@ class GoodWeDriver(InverterDriver):
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return [
-            {"key": "max_power_kw", "label": "Max Inverter Power (kW)", "type": "float", "default": 9.6},
+            {"key": "max_power_kw", "label": "Max inverter power (kW)", "type": "float", "default": 9.6},
         ]
 
     async def apply_control(

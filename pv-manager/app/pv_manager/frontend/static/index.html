@@ -29,29 +29,9 @@
                 </div>
                 <div id="interventionBanner" class="intervention-banner none" style="margin-top: 1rem;">Current
                     intervention: Not available</div>
+                <div id="loadStatusContainer" style="margin-top: 0.5rem; font-size: 0.9rem; color: #64748b;"></div>
                 <div id="error" class="message error"></div>
-                <div class="summary-grid" id="summaryGrid">
-                    <div class="summary-item">
-                        <span class="summary-label">Import (kWh)</span>
-                        <span class="summary-value" id="summary-import">--</span>
-                    </div>
-                    <div class="summary-item">
-                        <span class="summary-label">Export (kWh)</span>
-                        <span class="summary-value" id="summary-export">--</span>
-                    </div>
-                    <div class="summary-item">
-                        <span class="summary-label">Net Cost (€)</span>
-                        <span class="summary-value" id="summary-net">--</span>
-                    </div>
-                    <div class="summary-item">
-                        <span class="summary-label">PV energy (kWh)</span>
-                        <span class="summary-value" id="summary-pv-energy">--</span>
-                    </div>
-                    <div class="summary-item">
-                        <span class="summary-label">Consumption (kWh)</span>
-                        <span class="summary-value" id="summary-load">--</span>
-                    </div>
-                </div>
+
                 <div id="summaryWindow" class="meta"></div>
                 <div id="trainingState" class="training-state">Training status unknown.</div>
                 <div id="trainingError" class="training-state error" style="display:none;"></div>
@@ -66,6 +46,8 @@
                 <h2>Forecast vs Load</h2>
                 <p class="meta">Last updated: <span id="lastUpdated">waiting…</span></p>
                 <div id="forecastMessage" class="message"></div>
+                <div id="forecastSummary"
+                    style="margin-top:-0.5rem; margin-bottom:0.5rem; font-size:0.9rem; color: #64748b;"></div>
                 <div class="chart-container chart-forecast">
                     <canvas id="forecastChart" height="320"></canvas>
                 </div>
@@ -82,12 +64,16 @@
                     </div>
                     <div class="optimization-block">
                         <h3 class="chart-subtitle">Grid exchange</h3>
+                        <div id="gridSummary"
+                            style="margin-top:-0.5rem; margin-bottom:0.5rem; font-size:0.9rem; color: #64748b;"></div>
                         <div class="chart-container chart-grid">
                             <canvas id="gridChart" height="320"></canvas>
                         </div>
                     </div>
                     <div class="optimization-block">
                         <h3 class="chart-subtitle">Scheduled Flexible Loads</h3>
+                        <div id="deferrableLoadSummary"
+                            style="margin-top:-0.5rem; margin-bottom:0.5rem; font-size:0.9rem; color: #64748b;"></div>
                         <div class="chart-container chart-deferrable">
                             <canvas id="deferrableLoadChart" height="320"></canvas>
                         </div>
@@ -112,7 +98,7 @@
                         <p class="message">Configure Home Assistant entities and the inverter driver.</p>
                         <form id="controlForm" class="settings-form" autocomplete="off">
                             <div class="field">
-                                <label for="driverSelect">Inverter Driver</label>
+                                <label for="driverSelect">Inverter driver</label>
                                 <select id="driverSelect">
                                     <option value="">Select a driver...</option>
                                 </select>
@@ -121,10 +107,9 @@
                             <div class="field checkbox-field">
                                 <label class="checkbox" for="exportLimitToggle">
                                     <input type="checkbox" id="exportLimitToggle" aria-describedby="exportLimitHint" />
-                                    <span>PV power is limited by the inverter</span>
+                                    <span>PV power reading false when export disabled <span class="tooltip-icon"
+                                            data-tooltip="Enable when export throttling keeps PV power below the array's potential (e.g. once batteries are full).">?</span></span>
                                 </label>
-                                <p class="hint" id="exportLimitHint">Enable when export throttling keeps PV power below
-                                    the array&apos;s potential once batteries are full.</p>
                             </div>
                             <p class="message" id="controlMessage" style="display:none;"></p>
                     </div>
@@ -135,39 +120,34 @@
                     <p class="message">Set how much each kWh of battery throughput should cost to reflect wear.</p>
                     <form id="batteryForm" class="settings-form" autocomplete="off">
                         <div class="field">
-                            <label for="batteryCapacityInput">Usable capacity (kWh)</label>
+                            <label for="batteryCapacityInput">Usable capacity (kWh) <span class="tooltip-icon"
+                                    data-tooltip="Defines how much energy the optimization can store in the battery.">?</span></label>
                             <input type="number" id="batteryCapacityInput" min="0.1" step="0.1" inputmode="decimal"
                                 aria-describedby="batteryCapacityHint" />
-                            <p class="hint" id="batteryCapacityHint">Defines how much energy the optimization can
-                                store in the battery.</p>
                         </div>
                         <div class="field">
-                            <label for="batteryPowerInput">Charge / discharge limit (kW)</label>
+                            <label for="batteryPowerInput">Charge / discharge limit (kW) <span class="tooltip-icon"
+                                    data-tooltip="Set to the inverter's continuous charge or discharge power limit.">?</span></label>
                             <input type="number" id="batteryPowerInput" min="0.1" step="0.1" inputmode="decimal"
                                 aria-describedby="batteryPowerHint" />
-                            <p class="hint" id="batteryPowerHint">Set to the inverter&apos;s continuous charge or
-                                discharge power limit.</p>
                         </div>
                         <div class="field">
-                            <label for="batterySocMinInput">Reserve floor (% SoC)</label>
+                            <label for="batterySocMinInput">Reserve floor (% SoC) <span class="tooltip-icon"
+                                    data-tooltip="Keep at least this much charge reserved for resiliency.">?</span></label>
                             <input type="number" id="batterySocMinInput" min="0" max="98" step="1" inputmode="decimal"
                                 aria-describedby="batterySocMinHint" />
-                            <p class="hint" id="batterySocMinHint">Keep at least this much charge reserved for
-                                resiliency.</p>
                         </div>
                         <div class="field">
-                            <label for="batterySocMaxInput">Maximum usable SoC (%)</label>
+                            <label for="batterySocMaxInput">Maximum usable SoC (%) <span class="tooltip-icon"
+                                    data-tooltip="Upper bound on usable charge to limit battery wear.">?</span></label>
                             <input type="number" id="batterySocMaxInput" min="2" max="100" step="1" inputmode="decimal"
                                 aria-describedby="batterySocMaxHint" />
-                            <p class="hint" id="batterySocMaxHint">Upper bound on usable charge to limit battery
-                                wear.</p>
                         </div>
                         <div class="field">
-                            <label for="batteryWearInput">Battery wear cost (€/kWh)</label>
+                            <label for="batteryWearInput">Battery wear cost (€/kWh) <span class="tooltip-icon"
+                                    data-tooltip="Applied as a throughput penalty in the optimization to limit excessive cycling.">?</span></label>
                             <input type="number" id="batteryWearInput" min="0" step="0.01" inputmode="decimal"
                                 aria-describedby="batteryWearHint" />
-                            <p class="hint" id="batteryWearHint">Applied as a throughput penalty in the optimization
-                                to limit excessive cycling.</p>
                         </div>
                         <p class="message" id="batteryMessage" style="display:none;"></p>
                     </form>
@@ -179,28 +159,26 @@
                         <fieldset class="tariff-group">
                             <legend>Grid import</legend>
                             <div class="field">
-                                <label for="importTariffMode">Mode</label>
+                                <label for="importTariffMode">Mode <span class="tooltip-icon"
+                                        data-tooltip="Apply a single fixed rate to every interval.">?</span></label>
                                 <select id="importTariffMode" aria-describedby="importTariffHint">
                                     <option value="constant">Constant price</option>
                                     <option value="spot_plus_constant">Spot price with offset</option>
                                     <option value="dual_rate">Dual-rate schedule</option>
                                 </select>
-                                <p class="hint" id="importTariffHint">Apply a single fixed rate to every interval.
-                                </p>
                             </div>
                             <div class="field" id="importConstantField" data-tariff-scope="import"
                                 data-tariff-mode="constant" style="display:none;">
-                                <label for="importConstantPrice">Import price (€/kWh)</label>
+                                <label for="importConstantPrice">Import price (€/kWh) <span class="tooltip-icon"
+                                        data-tooltip="Used for every interval when constant pricing is selected.">?</span></label>
                                 <input type="number" id="importConstantPrice" min="0" step="0.001"
                                     inputmode="decimal" />
-                                <p class="hint">Used for every interval when constant pricing is selected.</p>
                             </div>
                             <div class="field" id="importSpotOffsetField" data-tariff-scope="import"
                                 data-tariff-mode="spot_plus_constant" style="display:none;">
-                                <label for="importSpotOffset">Offset from spot price (€/kWh)</label>
+                                <label for="importSpotOffset">Offset from spot price (€/kWh) <span class="tooltip-icon"
+                                        data-tooltip="Positive values raise import prices; negative values lower them relative to the spot signal.">?</span></label>
                                 <input type="number" id="importSpotOffset" step="0.001" inputmode="decimal" />
-                                <p class="hint">Positive values raise import prices; negative values lower them
-                                    relative to the spot signal.</p>
                             </div>
                             <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
                                 style="display:none;">
@@ -220,11 +198,10 @@
                             </div>
                             <div class="field" data-tariff-scope="import" data-tariff-mode="dual_rate"
                                 style="display:none;">
-                                <label for="importPeakEnd">Peak end (local time)</label>
+                                <label for="importPeakEnd">Peak end (local time) <span class="tooltip-icon"
+                                        data-tooltip="Intervals between start and end use the peak rate; others use the off-peak rate.">?</span></label>
                                 <input type="text" id="importPeakEnd" inputmode="numeric"
                                     pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
-                                <p class="hint">Intervals between start and end use the peak rate; others use the
-                                    off-peak rate.</p>
                             </div>
                         </fieldset>
                         <fieldset class="tariff-group">
@@ -232,40 +209,37 @@
                             <div class="field checkbox-field">
                                 <label class="checkbox" for="exportEnabledToggle">
                                     <input type="checkbox" id="exportEnabledToggle" />
-                                    <span>Enable Export</span>
+                                    <span>Enable export</span>
                                 </label>
                             </div>
                             <div id="exportSettingsContainer">
                                 <div class="field">
-                                    <label for="exportPowerLimit">Export Power Limit (kW)</label>
+                                    <label for="exportPowerLimit">Export power limit (kW) <span class="tooltip-icon"
+                                            data-tooltip="Maximum power allowed to be exported to the grid. Leave empty for no limit.">?</span></label>
                                     <input type="number" id="exportPowerLimit" min="0" step="0.1" inputmode="decimal" />
-                                    <p class="hint">Maximum power allowed to be exported to the grid. Leave empty
-                                        for no limit.</p>
                                 </div>
                                 <div class="field">
-                                    <label for="exportTariffMode">Mode</label>
+                                    <label for="exportTariffMode">Mode <span class="tooltip-icon"
+                                            data-tooltip="Apply a single fixed rate to every interval.">?</span></label>
                                     <select id="exportTariffMode" aria-describedby="exportTariffHint">
                                         <option value="constant">Constant price</option>
                                         <option value="spot_plus_constant">Spot price with offset</option>
                                         <option value="dual_rate">Dual-rate schedule</option>
                                     </select>
-                                    <p class="hint" id="exportTariffHint">Apply a single fixed rate to every
-                                        interval.
-                                    </p>
                                 </div>
                                 <div class="field" id="exportConstantField" data-tariff-scope="export"
                                     data-tariff-mode="constant" style="display:none;">
-                                    <label for="exportConstantPrice">Export price (€/kWh)</label>
+                                    <label for="exportConstantPrice">Export price (€/kWh) <span class="tooltip-icon"
+                                            data-tooltip="Used for every interval when constant pricing is selected.">?</span></label>
                                     <input type="number" id="exportConstantPrice" min="0" step="0.001"
                                         inputmode="decimal" />
-                                    <p class="hint">Used for every interval when constant pricing is selected.</p>
                                 </div>
                                 <div class="field" id="exportSpotOffsetField" data-tariff-scope="export"
                                     data-tariff-mode="spot_plus_constant" style="display:none;">
-                                    <label for="exportSpotOffset">Offset from spot price (€/kWh)</label>
+                                    <label for="exportSpotOffset">Offset from spot price (€/kWh) <span
+                                            class="tooltip-icon"
+                                            data-tooltip="Positive values raise export revenue; negative values lower it relative to the spot tariff.">?</span></label>
                                     <input type="number" id="exportSpotOffset" step="0.001" inputmode="decimal" />
-                                    <p class="hint">Positive values raise export revenue; negative values lower it
-                                        relative to the spot tariff.</p>
                                 </div>
                                 <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
                                     style="display:none;">
@@ -286,12 +260,10 @@
                                 </div>
                                 <div class="field" data-tariff-scope="export" data-tariff-mode="dual_rate"
                                     style="display:none;">
-                                    <label for="exportPeakEnd">Peak end (local time)</label>
+                                    <label for="exportPeakEnd">Peak end (local time) <span class="tooltip-icon"
+                                            data-tooltip="Intervals between start and end use the peak rate; others use the off-peak rate.">?</span></label>
                                     <input type="text" id="exportPeakEnd" inputmode="numeric"
                                         pattern="^([01]\d|2[0-3]):[0-5]\d$" placeholder="21:00" />
-                                    <p class="hint">Intervals between start and end use the peak rate; others use
-                                        the
-                                        off-peak rate.</p>
                                 </div>
                             </div>
                         </fieldset>
@@ -344,7 +316,8 @@
                                 <div
                                     style="display:flex; justify-content:flex-end; margin-bottom: -1rem; position: relative; z-index: 10;">
                                     <button type="button" class="remove-load-btn" title="Remove Load">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                            width="20" height="20">
                                             <polyline points="3 6 5 6 21 6"></polyline>
                                             <path
                                                 d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2">
@@ -353,76 +326,150 @@
                                     </button>
                                 </div>
 
-                                <div class="field">
-                                    <label>Name</label>
-                                    <input type="text" class="load-name" placeholder="My Device">
-                                </div>
-
-                                <div class="field">
-                                    <label>Nominal Power (kW)</label>
-                                    <input type="number" step="0.1" min="0" class="load-nominal-power"
-                                        placeholder="e.g. 3.6">
-                                </div>
-                                <div class="field">
-                                    <label>Control Switch</label>
-                                    <button type="button" class="load-switch-entity entity-select-btn">Select
-                                        switch...</button>
-                                </div>
-
-                                <div class="field">
-                                    <label>Value (€/kWh)</label>
-                                    <input type="number" step="0.01" class="load-opt-start-value" placeholder="0.05">
-                                    <p class="hint">How much running this device is worth to you.</p>
-                                </div>
-
-                                <div class="field">
-                                    <label>Optimization Strategy</label>
-                                    <select class="load-opt-mode">
-                                        <option value="smart_dump">Smart Dump (Automatic)</option>
-                                        <option value="custom_curve">Custom Curve</option>
-                                    </select>
-                                </div>
-
-                                <div class="custom-curve-settings"
-                                    style="display: none; padding-left: 0.75rem; border-left: 3px solid var(--border-color);">
-                                    <div class="field" style="margin-top: 1rem;">
-                                        <label>Saturation Point (kWh)</label>
-                                        <input type="number" step="0.1" min="0" class="load-opt-saturation"
-                                            placeholder="10.0">
-                                        <p class="hint">Daily energy amount where value drops to zero.</p>
+                                <!-- Section 1: Basic Info -->
+                                <div style="display:flex; flex-direction:column; gap:1rem; margin-bottom:1rem;">
+                                    <div class="field">
+                                        <label>Name</label>
+                                        <input type="text" class="load-name" placeholder="e.g. Pool Pump">
                                     </div>
-                                    <div class="checkbox-field" style="margin-top: 1rem;">
-                                        <label class="checkbox">
-                                            <input type="checkbox" class="load-opt-overshoot">
-                                            Stop immediately when full
-                                        </label>
-                                        <p class="hint" style="margin-top:0;">If unchecked, continues as dump load if
-                                            energy is cheap.</p>
+                                    <div class="field">
+                                        <label>Nominal power (kW)</label>
+                                        <input type="number" step="0.1" min="0" class="load-nominal-power"
+                                            placeholder="0.0">
+                                    </div>
+                                    <div class="field">
+                                        <label>Power sensor (Optional) <span class="tooltip-icon"
+                                                data-tooltip="Used for precise history logging. If omitted, nominal power is assumed.">?</span></label>
+                                        <button type="button" class="load-power-entity entity-select-btn">Select
+                                            sensor...</button>
                                     </div>
                                 </div>
 
+                                <hr style="border:0; border-top:1px solid var(--border-color); margin: 1rem 0;">
+
+                                <!-- Section 2: Control Strategy & Entities -->
                                 <div class="field">
-                                    <label>Power Sensor (Optional)</label>
-                                    <button type="button" class="load-power-entity entity-select-btn">Select
-                                        sensor...</button>
-                                    <p class="hint">Used for precise history logging. If omitted, nominal power is
-                                        assumed when switch is ON.</p>
+                                    <label>Control strategy</label>
+                                    <div
+                                        style="background: var(--bg-subtle); padding: 1rem; border-radius: 6px; border: 1px solid var(--border-color);">
+
+                                        <!-- Control Type Select -->
+                                        <div class="field">
+                                            <label style="font-weight:600; color:var(--text-primary);">1. Control
+                                                type</label>
+                                            <select class="load-control-type" style="width:100%;">
+                                                <option value="on_off">On/Off (Binary)</option>
+                                                <option value="continuous">Continuous (Variable)</option>
+                                            </select>
+                                            <p class="control-type-desc"
+                                                style="font-size:0.8rem; color:var(--text-secondary); margin-top:4px;">
+                                                <!-- Dynamic Description populated by JS potentially, or static help -->
+                                            </p>
+                                        </div>
+
+                                        <!-- Optimization Mode (Continuous Only) or Strategy Label (Binary) -->
+                                        <div class="field opt-mode-field" style="margin-top:1rem;">
+                                            <label style="font-weight:600; color:var(--text-primary);">2. Optimization
+                                                mode <span class="tooltip-icon"
+                                                    data-tooltip="Constant: Load runs at fixed power. Decreasing: Power adjusts based on optimization curve.">?</span></label>
+                                            <select class="load-opt-mode" style="width:100%;">
+                                                <option value="smart_dump">Constant value</option>
+                                                <option value="custom_curve">Decreasing value</option>
+                                            </select>
+                                        </div>
+
+                                        <!-- Entities Group -->
+                                        <div style="margin-top:1.5rem;">
+                                            <label
+                                                style="font-weight:600; color:var(--text-primary); margin-bottom:0.5rem; display:block;">3.
+                                                Controlled entities</label>
+
+                                            <!-- Switch Entity -->
+                                            <div class="field" style="margin-bottom:0.75rem;">
+                                                <label class="switch-entity-label" style="font-size:0.9rem;">
+                                                    <span class="label-text">Switch entity</span>
+                                                    <span class="tooltip-icon"
+                                                        data-tooltip="Entity to toggle the load ON/OFF. Required for Binary control.">?</span>
+                                                </label>
+                                                <button type="button" class="load-switch-entity entity-select-btn"
+                                                    data-domain="switch">Select switch...</button>
+                                            </div>
+
+                                            <!-- Variable Power Entity -->
+                                            <div class="field load-variable-power-container"
+                                                style="margin-bottom:0.75rem;">
+                                                <label class="var-power-entity-label" style="font-size:0.9rem;">
+                                                    <span class="label-text">Variable power entity</span>
+                                                    <span class="tooltip-icon"
+                                                        data-tooltip="Entity to set the current power limit (e.g. EV charger current).">?</span>
+                                                </label>
+                                                <button type="button"
+                                                    class="load-variable-power-entity entity-select-btn"
+                                                    data-domain="number">Select number...</button>
+                                            </div>
+
+
+                                        </div>
+
+                                        <!-- Tuning Parameters Group (Moved Inside) -->
+                                        <div
+                                            style="margin-top:1.5rem; border-top: 1px dashed var(--border-color); padding-top: 1rem;">
+                                            <label
+                                                style="font-weight:600; color:var(--text-primary); margin-bottom:0.5rem; display:block;">4.
+                                                Tuning parameters</label>
+
+                                            <div class="load-config-block"
+                                                style="border:none; padding:0; background:none;">
+                                                <div class="field param-start-value">
+                                                    <label>Start value (€/kWh) <span class="tooltip-icon"
+                                                            data-tooltip="Price threshold to start running. Higher means higher priority.">?</span></label>
+                                                    <input type="number" step="0.01" class="load-opt-start-value"
+                                                        placeholder="0.05">
+                                                </div>
+
+                                                <div class="field param-saturation">
+                                                    <label>Saturation point (kWh) <span class="tooltip-icon"
+                                                            data-tooltip="Daily energy amount where value drops to zero (Target Limit).">?</span></label>
+                                                    <input type="number" step="0.1" min="0" class="load-opt-saturation"
+                                                        placeholder="10.0">
+                                                </div>
+
+                                                <div class="field param-max-energy" style="display:none;">
+                                                    <label>Max energy (kWh) <span class="tooltip-icon"
+                                                            data-tooltip="Strict limit on daily consumption. Leave empty for unlimited.">?</span></label>
+                                                    <input type="number" step="0.1" min="0" class="load-opt-max-energy"
+                                                        placeholder="Unlimited">
+                                                </div>
+
+                                                <div class="checkbox-field param-overshoot">
+                                                    <label class="checkbox">
+                                                        <input type="checkbox" class="load-opt-overshoot">
+                                                        Stop immediately when full
+                                                        <span class="tooltip-icon"
+                                                            data-tooltip="If unchecked, continues as dump load if energy is cheap.">?</span>
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                    </div>
                                 </div>
+
+
                             </div>
                         </div>
                     </template>
                 </div>
                 <div data-settings-panel="training" class="settings-panel">
-                    <h3>Model Training</h3>
+                    <h3>Model training</h3>
                     <p class="message">Configure automated model retraining.</p>
                     <form id="trainingForm" class="settings-form" autocomplete="off">
                         <div class="field checkbox-field">
                             <label class="checkbox" for="autoTrainingToggle">
                                 <input type="checkbox" id="autoTrainingToggle" />
-                                <span>Enable automatic nightly training (02:00 UTC)</span>
+                                <span>Enable automatic nightly training (02:00 UTC) <span class="tooltip-icon"
+                                        data-tooltip="Automatically retrain models every night to adapt to changing conditions.">?</span></span>
                             </label>
-                            <p class="hint">Automatically retrain models every night to adapt to changing
-                                conditions.</p>
                         </div>
                     </form>
                 </div>

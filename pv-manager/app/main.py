@@ -49,6 +49,25 @@ def _load_ha_options():
 
 
 def main() -> None:
+    # DEBUG: Enable faulthandler to dump stack on Ctrl+\ (SIGQUIT)
+    import faulthandler
+    import signal
+    import sys
+    faulthandler.enable()
+    if hasattr(signal, "SIGQUIT"):
+        faulthandler.register(signal.SIGQUIT)
+    
+    print(f"DEBUG: Pre-Import SIGINT: {signal.getsignal(signal.SIGINT)}")
+    
+    # Force import cvxpy to see if it changes signals
+    try:
+        import cvxpy
+        print("DEBUG: cvxpy imported.")
+    except ImportError:
+        print("DEBUG: cvxpy not found.")
+        
+    print(f"DEBUG: Post-Import SIGINT: {signal.getsignal(signal.SIGINT)}")
+
     _load_ha_options()
     host = os.getenv("UVICORN_HOST", "0.0.0.0")
     port = int(os.getenv("UVICORN_PORT", "8099"))
@@ -56,6 +75,7 @@ def main() -> None:
     reload_enabled = _env_flag("UVICORN_RELOAD")
 
     if reload_enabled:
+        print("DEBUG: Running in reload mode")
         uvicorn.run(
             "pv_manager:create_application",
             host=host,
@@ -66,24 +86,7 @@ def main() -> None:
         )
     else:
         app = create_application()
-        
-        # Define log config to enforce timestamps on Uvicorn
-        log_config = uvicorn.config.LOGGING_CONFIG.copy()
-        log_config["formatters"]["default"]["fmt"] = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-        log_config["formatters"]["default"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
-        log_config["formatters"]["access"]["fmt"] = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-        log_config["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
-
-        uvisettings = {
-            "host": host,
-            "port": port,
-            "log_level": log_level,
-            "proxy_headers": True,
-            "forwarded_allow_ips": "*",
-            "log_config": log_config,
-        }
-        
-        uvicorn.run(app, **uvisettings)
+        uvicorn.run(app, host=host, port=port, log_level=log_level, proxy_headers=True, forwarded_allow_ips="*")
 
 
 if __name__ == "__main__":

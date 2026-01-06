@@ -1469,25 +1469,52 @@ function renderEntityList(searchTerm) {
 }
 
 function updateSummary(summary) {
-    const mapping = [
-        { key: 'import_kwh', id: 'summary-import', format: (v) => numberFmt1.format(v) },
-        { key: 'export_kwh', id: 'summary-export', format: (v) => numberFmt1.format(v) },
-        { key: 'net_cost_eur', id: 'summary-net', format: (v) => currencyFmt.format(v) },
-        { key: 'pv_energy_kwh', id: 'summary-pv-energy', format: (v) => numberFmt1.format(v) },
-        { key: 'consumption_kwh', id: 'summary-load', format: (v) => numberFmt1.format(v) },
-    ];
+    const forecastEl = document.getElementById('forecastSummary');
+    const gridEl = document.getElementById('gridSummary');
+
     if (!summary) {
-        mapping.forEach((item) => {
-            const el = document.getElementById(item.id);
-            el.textContent = '--';
-        });
+        if (forecastEl) forecastEl.textContent = '';
+        if (gridEl) gridEl.textContent = '';
         return;
     }
-    mapping.forEach((item) => {
-        const el = document.getElementById(item.id);
-        const value = Number(summary[item.key]);
-        el.textContent = Number.isFinite(value) ? item.format(value) : '--';
-    });
+
+    // pv_energy_kwh, consumption_kwh -> Forecast Chart
+    if (forecastEl) {
+        const pv = Number(summary.pv_energy_kwh);
+        const load = Number(summary.consumption_kwh);
+        const pvStr = Number.isFinite(pv) ? numberFmt1.format(pv) : '--';
+        const loadStr = Number.isFinite(load) ? numberFmt1.format(load) : '--';
+
+        // Colors match forecastChart datasets
+        // PV: #22c55e (Green-500)
+        // Load: #ef4444 (Red-500)
+        forecastEl.innerHTML = `
+            <span><span style="color:#22c55e">●</span> <strong>PV energy:</strong> ${pvStr} kWh</span>
+            &nbsp;|&nbsp; 
+            <span><span style="color:#ef4444">●</span> <strong>Consumption:</strong> ${loadStr} kWh</span>`;
+    }
+
+    // import_kwh, export_kwh, net_cost_eur -> Grid Chart
+    if (gridEl) {
+        const imp = Number(summary.import_kwh);
+        const exp = Number(summary.export_kwh);
+        const cost = Number(summary.net_cost_eur);
+
+        const impStr = Number.isFinite(imp) ? numberFmt1.format(imp) : '--';
+        const expStr = Number.isFinite(exp) ? numberFmt1.format(exp) : '--';
+        const costStr = Number.isFinite(cost) ? currencyFmt.format(cost) : '--';
+
+        // Colors match gridChart datasets
+        // Import: rgba(37, 99, 235, 1) (Blue-600) - alpha removed for dot visibility
+        // Export: rgba(249, 115, 22, 1) (Orange-500)
+        // Net Cost: #eab308 (Yellow-500) - generic money color
+        gridEl.innerHTML = `
+            <span><span style="color:rgba(37, 99, 235, 1)">●</span> <strong>Import:</strong> ${impStr} kWh</span>
+            &nbsp;|&nbsp; 
+            <span><span style="color:rgba(249, 115, 22, 1)">●</span> <strong>Export:</strong> ${expStr} kWh</span>
+            &nbsp;|&nbsp; 
+            <span><span style="color:#eab308">●</span> <strong>Net cost:</strong> ${costStr}</span>`;
+    }
 }
 
 function applyStatus(payload) {
@@ -1793,13 +1820,15 @@ function ensureGridChart() {
                     label: 'Grid import (kW)',
                     data: [],
                     backgroundColor: 'rgba(37, 99, 235, 0.75)',
-                    borderRadius: 2,
+                    borderRadius: { topLeft: 50, topRight: 50, bottomLeft: 0, bottomRight: 0 },
+                    borderSkipped: false,
                 },
                 {
                     label: 'Grid export (kW)',
                     data: [],
                     backgroundColor: 'rgba(249, 115, 22, 0.75)',
-                    borderRadius: 2,
+                    borderRadius: { topLeft: 50, topRight: 50, bottomLeft: 0, bottomRight: 0 },
+                    borderSkipped: false,
                 },
             ],
         },
@@ -1885,6 +1914,11 @@ function ensureDeferrableLoadChart() {
                     stacked: true,
                     title: { display: true, text: 'Power (kW)' },
                     beginAtZero: true,
+                    suggestedMax: 0.2, // Ensure empty chart has reasonable scale
+                    ticks: {
+                        // Simplify ticks
+                        maxTicksLimit: 6,
+                    }
                 },
             },
             plugins: {
@@ -1979,8 +2013,8 @@ function applyForecast(payload) {
     planChart.update();
 
     gridChart.data.labels = labels;
-    gridChart.data.datasets[0].data = sanitizedImport;
-    gridChart.data.datasets[1].data = sanitizedExport;
+    gridChart.data.datasets[0].data = sanitizedImport.map(v => (v === 0 ? null : v));
+    gridChart.data.datasets[1].data = sanitizedExport.map(v => (v === 0 ? null : v));
     gridChart.update();
 
     // -- Update Deferrable Load Chart --
@@ -1993,10 +2027,50 @@ function applyForecast(payload) {
 
         // Build datasets
         const datasets = [];
+        const summaryItems = [];
+
         const loads = (haEntitiesSettings && Array.isArray(haEntitiesSettings.deferrable_loads))
             ? haEntitiesSettings.deferrable_loads
             : [];
 
+        // --- 1. Populating Status Container (System Overview) ---
+        const statusItems = [];
+        for (let i = 0; i < loads.length; i++) {
+            const load = loads[i];
+            const name = load.name || `Load ${i + 1}`;
+
+            let statusColor = '#94a3b8'; // Default/Disabled (Gray)
+            let statusText = '';
+
+            // Check enabled state
+            const isEnabled = !(load.enabled === false || String(load.enabled) === 'false');
+
+            if (isEnabled) {
+                // We need to find the column.
+                let colName = `deferrable_${i}_kw`;
+                if (load.name) {
+                    const safeName = load.name.replace(/[^a-z0-9]/gi, '_');
+                    colName = `load_${safeName}_kw`;
+                }
+                const rawData = series[colName];
+                // If data exists and first point > 0 -> ON (Green), else OFF (Red)
+                if (rawData && rawData.length > 0 && rawData[0] > 0.001) {
+                    statusColor = '#22c55e'; // Green
+                    statusText = `<span style="color:#64748b; margin-left: 0.5rem;">(${numberFmt2.format(rawData[0])} kW)</span>`;
+                } else {
+                    statusColor = '#ef4444'; // Red
+                }
+            }
+
+            statusItems.push(`<div style="margin-top: 0.25rem;"><span style="color:${statusColor}">●</span> ${name}${statusText}</div>`);
+        }
+
+        const statusEl = document.getElementById('loadStatusContainer');
+        if (statusEl) {
+            statusEl.innerHTML = statusItems.join('');
+        }
+
+        // --- 2. Populating Chart (Scheduled Loads) ---
         // We iterate based on potential columns `def_load_0`, `def_load_1`... 
         // We assume up to 10 loads or use the settings length
         const maxCheck = loads.length > 0 ? loads.length : 5;
@@ -2006,21 +2080,27 @@ function applyForecast(payload) {
             // Robust check for disabled state
             if (load && (load.enabled === false || String(load.enabled) === 'false')) continue;
 
-            let colName = `deferrable_${i}_kw`; // Fallback
+            const name = (load && load.name) ? load.name : `Load ${i + 1}`;
 
+            let colName = `deferrable_${i}_kw`; // Fallback
             if (load && load.name) {
-                // Match Python: "".join(c if c.isalnum() else "_" for c in dload.name)
                 const safeName = load.name.replace(/[^a-z0-9]/gi, '_');
                 colName = `load_${safeName}_kw`;
             }
 
             const rawData = series[colName];
 
-            // Only add dataset if data exists in the payload (implies it was part of optimization)
+            // Only add dataset if data exists in the payload
             if (!rawData) continue;
 
             const dataValues = sanitizeSeries(rawData || zeros);
-            const name = (load && load.name) ? load.name : `Load ${i + 1}`;
+
+            // Calculate Total Energy
+            const sumKw = dataValues.reduce((a, b) => a + (b || 0), 0);
+            const energyKwh = sumKw * 0.25;
+
+            // Summary uses chart palette color and PIPE separator (as requested earlier)
+            summaryItems.push(`<span><span style="color:${palette[i % palette.length]}">●</span> <strong>${name}:</strong> ${numberFmt2.format(energyKwh)} kWh</span>`);
 
             datasets.push({
                 label: name,
@@ -2032,6 +2112,11 @@ function applyForecast(payload) {
 
         deferrableLoadChart.data.datasets = datasets;
         deferrableLoadChart.update();
+
+        const summaryEl = document.getElementById('deferrableLoadSummary');
+        if (summaryEl) {
+            summaryEl.innerHTML = summaryItems.join(' &nbsp;|&nbsp; ');
+        }
     }
 
     updateSummary(payload.summary);
@@ -2552,7 +2637,7 @@ function initDeferrableLoads() {
                 opt_mode: 'smart_dump',
                 opt_value_start_eur: 0.05,
                 opt_saturation_kwh: 10.0,
-                opt_saturation_kwh: 10.0,
+                opt_max_energy_kwh: null,
                 opt_prevent_overshoot: false,
                 enabled: true
             });
@@ -2620,6 +2705,10 @@ function initDeferrableLoads() {
         else if (e.target.classList.contains('load-opt-saturation')) {
             load.opt_saturation_kwh = parseFloat(e.target.value) || 0;
         }
+        else if (e.target.classList.contains('load-opt-max-energy')) {
+            const val = parseFloat(e.target.value);
+            load.opt_max_energy_kwh = (isNaN(val) || val === 0) ? null : val;
+        }
 
         // Debounced save
         scheduleSaveHAEntities();
@@ -2637,11 +2726,6 @@ function initDeferrableLoads() {
 
         if (e.target.classList.contains('load-opt-mode')) {
             load.opt_mode = e.target.value;
-            // Update UI visibility immediately
-            const customSettings = row.querySelector('.custom-curve-settings');
-            if (customSettings) {
-                customSettings.style.display = load.opt_mode === 'custom_curve' ? 'block' : 'none';
-            }
         }
         else if (e.target.classList.contains('load-opt-overshoot')) {
             load.opt_prevent_overshoot = e.target.checked;
@@ -2649,6 +2733,61 @@ function initDeferrableLoads() {
         else if (e.target.classList.contains('load-enabled-toggle')) {
             load.enabled = e.target.checked;
         }
+        else if (e.target.classList.contains('load-control-type')) {
+            load.control_type = e.target.value;
+        }
+
+        // --- Centralized Visibility Logic (Mirrors render function) ---
+        const cTypeEl = row.querySelector('.load-control-type');
+        const modeEl = row.querySelector('.load-opt-mode');
+
+        const cType = cTypeEl ? cTypeEl.value : 'on_off';
+        const optMode = modeEl ? modeEl.value : 'smart_dump';
+
+        // 1. Top Level & Entities
+        const varPower = row.querySelector('.load-variable-power-container');
+        const optModeField = row.querySelector('.opt-mode-field');
+
+        const switchLabelSpan = row.querySelector('.switch-entity-label .label-text');
+        const varPowerLabelSpan = row.querySelector('.var-power-entity-label .label-text');
+
+        if (cType === 'on_off') {
+            if (varPower) varPower.style.display = 'none';
+            if (optModeField) optModeField.style.display = 'none';
+            if (switchLabelSpan) switchLabelSpan.textContent = 'Switch entity';
+        } else {
+            if (varPower) varPower.style.display = 'block';
+            if (optModeField) optModeField.style.display = 'block';
+            if (switchLabelSpan) switchLabelSpan.textContent = 'Switch entity (Optional)';
+            if (varPowerLabelSpan) varPowerLabelSpan.textContent = 'Variable power entity';
+        }
+
+        // 2. Parameters
+        let showOvershoot = false;
+        let showSaturation = true;
+        let showMaxEnergy = false;
+
+        if (cType === 'on_off') {
+            showSaturation = false;
+            showMaxEnergy = true;
+        } else if (cType === 'continuous') {
+            if (optMode === 'custom_curve') {
+                showOvershoot = true;
+            }
+        }
+
+        const pOver = row.querySelector('.param-overshoot');
+        if (pOver) pOver.style.display = showOvershoot ? 'flex' : 'none';
+
+        const pSat = row.querySelector('.param-saturation');
+        if (pSat) pSat.style.display = showSaturation ? 'block' : 'none';
+
+        const pMax = row.querySelector('.param-max-energy');
+        if (pMax) pMax.style.display = showMaxEnergy ? 'block' : 'none';
+
+        // Ensure Start Value is visible
+        const pStart = row.querySelector('.param-start-value');
+        if (pStart) pStart.style.display = 'block';
 
         scheduleSaveHAEntities();
     });
@@ -2803,19 +2942,78 @@ function renderDeferrableLoads(force = false) {
         updateInput('.load-opt-start-value', (load.opt_value_start_eur !== undefined) ? load.opt_value_start_eur : 0.05);
         updateInput('.load-opt-saturation', (load.opt_saturation_kwh !== undefined) ? load.opt_saturation_kwh : 10.0);
         updateCheck('.load-opt-overshoot', load.opt_prevent_overshoot);
+        updateInput('.load-opt-max-energy', (load.opt_max_energy_kwh !== undefined && load.opt_max_energy_kwh !== null) ? load.opt_max_energy_kwh : '');
 
-        // Mode Select & Visibility
+        // --- Visibility Helper ---
+        const updateVisibility = () => {
+            const cTypeEl = row.querySelector('.load-control-type');
+            const modeEl = row.querySelector('.load-opt-mode');
+
+            const cType = cTypeEl ? cTypeEl.value : 'on_off';
+            const optMode = modeEl ? modeEl.value : 'smart_dump';
+
+            // 1. Top Level & Entities
+            const varPower = row.querySelector('.load-variable-power-container');
+            const optModeField = row.querySelector('.opt-mode-field');
+
+            const switchLabelSpan = row.querySelector('.switch-entity-label .label-text');
+            const varPowerLabelSpan = row.querySelector('.var-power-entity-label .label-text');
+
+            if (cType === 'on_off') {
+                if (varPower) varPower.style.display = 'none';
+                if (optModeField) optModeField.style.display = 'none';
+                if (switchLabelSpan) switchLabelSpan.textContent = 'Switch entity';
+            } else {
+                if (varPower) varPower.style.display = 'block';
+                if (optModeField) optModeField.style.display = 'block';
+                if (switchLabelSpan) switchLabelSpan.textContent = 'Switch entity (Optional)';
+                if (varPowerLabelSpan) varPowerLabelSpan.textContent = 'Variable power entity';
+            }
+
+            // 2. Parameters
+            let showOvershoot = false;
+            let showSaturation = true;
+            let showMaxEnergy = false;
+
+            if (cType === 'on_off') {
+                showSaturation = false;
+                showMaxEnergy = true;
+            } else if (cType === 'continuous') {
+                if (optMode === 'custom_curve') {
+                    showOvershoot = true;
+                }
+            }
+
+            const pOver = row.querySelector('.param-overshoot');
+            if (pOver) pOver.style.display = showOvershoot ? 'flex' : 'none';
+
+            const pSat = row.querySelector('.param-saturation');
+            if (pSat) pSat.style.display = showSaturation ? 'block' : 'none';
+
+            const pMax = row.querySelector('.param-max-energy');
+            if (pMax) pMax.style.display = showMaxEnergy ? 'block' : 'none';
+        };
+
+        // Mode Select
         const modeSel = row.querySelector('.load-opt-mode');
         if (modeSel && document.activeElement !== modeSel) {
             modeSel.value = load.opt_mode || 'smart_dump';
-            const customSettings = row.querySelector('.custom-curve-settings');
-            if (customSettings) {
-                // Ensure visibility matches mode
-                // Note: user might be changing it right now via 'change' event which updates 'load'
-                // But if this is a background update, we enforce it.
-                // If user just changed it, load.opt_mode is updated, so this is safe.
-                customSettings.style.display = modeSel.value === 'custom_curve' ? 'block' : 'none';
-            }
+        }
+
+        // Control Type
+        const controlTypeSel = row.querySelector('.load-control-type');
+        if (controlTypeSel && document.activeElement !== controlTypeSel) {
+            controlTypeSel.value = load.control_type || 'on_off';
+        }
+
+        // Initial Update
+        updateVisibility();
+
+        const varPowerBtn = row.querySelector('.load-variable-power-entity');
+        if (varPowerBtn) {
+            const currentId = load.variable_power_entity || '';
+            const label = resolveEntityLabel(currentId) || 'Select number...';
+            if (varPowerBtn.textContent !== label) varPowerBtn.textContent = label;
         }
 
         // --- Buttons (Text Only) ---

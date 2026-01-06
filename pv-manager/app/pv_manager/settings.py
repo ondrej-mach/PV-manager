@@ -132,6 +132,9 @@ class DeferrableLoad:
     opt_saturation_kwh: float = 10.0
     opt_prevent_overshoot: bool = False
     enabled: bool = True
+    control_type: str = "on_off"  # 'on_off' or 'continuous'
+    variable_power_entity: Optional[str] = None  # Entity ID for setting power limit (input_number)
+    opt_max_energy_kwh: Optional[float] = None
 
 
 @dataclass
@@ -333,6 +336,9 @@ def load_settings() -> AppSettings:
                 opt_saturation_kwh=_sanitize_positive_float(d.get("opt_saturation_kwh"), fallback=10.0),
                 opt_prevent_overshoot=bool(d.get("opt_prevent_overshoot", False)),
                 enabled=bool(d.get("enabled", True)),
+                control_type=d.get("control_type", "on_off"),
+                variable_power_entity=d.get("variable_power_entity"),
+                opt_max_energy_kwh=_sanitize_positive_float(d.get("opt_max_energy_kwh"), fallback=None, allow_zero=False) if d.get("opt_max_energy_kwh") is not None else None,
             )
             for d in ha_data.get("deferrable_loads", [])
             if isinstance(d, dict)

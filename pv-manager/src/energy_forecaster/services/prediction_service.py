@@ -244,7 +244,7 @@ def run_prediction_pipeline(
     house_pred[TARGET_COL] = house_pred[TARGET_COL].clip(lower=0.0)
     _dump_debug_frame(debug_path, "house_predictions", house_pred)
 
-    _LOGGER.info(
+    _LOGGER.debug(
         "Prediction pipeline timings: HA %.2fs | weather %.2fs | features %.2fs | pv %.2fs | house %.2fs; rows: ha=%d weather=%d preds=%d",
         timings.get("ha_fetch", 0.0),
         timings.get("wx_fetch", 0.0),
